@@ -11,9 +11,8 @@ const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
-app.use(express.static('public'));
+app.use(express.static(path.join(__dirname, 'public')));
 
-// ── Autenticação Google ───────────────────────────────────────────────────
 function getGoogleAuth() {
   const creds = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT);
   return new google.auth.GoogleAuth({
@@ -25,9 +24,8 @@ function getGoogleAuth() {
   });
 }
 
-// ── Data por extenso ──────────────────────────────────────────────────────
-function dataExtenso(d) {
-  const dt = d ? new Date(d + 'T12:00:00') : new Date();
+function dataExtenso() {
+  const dt = new Date();
   const meses = ['janeiro','fevereiro','março','abril','maio','junho',
                  'julho','agosto','setembro','outubro','novembro','dezembro'];
   return `${dt.getDate()} de ${meses[dt.getMonth()]} de ${dt.getFullYear()}`;
@@ -39,7 +37,6 @@ function fmtData(d) {
   catch(e) { return d; }
 }
 
-// ── Preencher template .docx ──────────────────────────────────────────────
 function preencherTemplate(nomeArq, dados) {
   const caminho = path.join(__dirname, 'templates', nomeArq);
   const conteudo = fs.readFileSync(caminho, 'binary');
@@ -53,9 +50,8 @@ function preencherTemplate(nomeArq, dados) {
   return doc.getZip().generate({ type: 'nodebuffer', compression: 'DEFLATE' });
 }
 
-// ── Upload para Google Drive ──────────────────────────────────────────────
-async function uploadDrive(auth, pastaId, nomeArq, buffer, mimeType) {
-  const drive = google.drive({ version: 'v3', auth });
+async function uploadDrive(drive, pastaId, nomeArq, buffer, mimeType) {
+  const { Readable } = require('stream');
   const res = await drive.files.create({
     requestBody: {
       name: nomeArq,
@@ -64,48 +60,39 @@ async function uploadDrive(auth, pastaId, nomeArq, buffer, mimeType) {
     },
     media: {
       mimeType,
-      body: require('stream').Readable.from(buffer),
+      body: Readable.from(buffer),
     },
     fields: 'id,webViewLink',
   });
   return res.data;
 }
 
-// ── Criar/buscar pasta no Drive ───────────────────────────────────────────
-async function obterPasta(auth, pastaRaizId, nomePasta) {
-  const drive = google.drive({ version: 'v3', auth });
-
-  // Buscar se já existe
+async function obterPasta(drive, nomePasta) {
   const busca = await drive.files.list({
-    q: `'${pastaRaizId}' in parents and name='${nomePasta}' and mimeType='application/vnd.google-apps.folder' and trashed=false`,
+    q: `name='${nomePasta}' and mimeType='application/vnd.google-apps.folder' and trashed=false`,
     fields: 'files(id,name)',
   });
-
   if (busca.data.files.length > 0) return busca.data.files[0].id;
 
-  // Criar nova
   const criar = await drive.files.create({
     requestBody: {
       name: nomePasta,
       mimeType: 'application/vnd.google-apps.folder',
-      parents: [pastaRaizId],
     },
     fields: 'id',
   });
   return criar.data.id;
 }
 
-// ── Salvar linha no Sheets ────────────────────────────────────────────────
 async function salvarSheets(auth, sheetId, linha) {
   const sheets = google.sheets({ version: 'v4', auth });
-
-  // Verificar se tem cabeçalho
-  const check = await sheets.spreadsheets.values.get({
-    spreadsheetId: sheetId,
-    range: 'Atendimentos!A1',
-  });
-
-  if (!check.data.values || !check.data.values[0] || check.data.values[0][0] !== 'ID') {
+  try {
+    const check = await sheets.spreadsheets.values.get({
+      spreadsheetId: sheetId,
+      range: 'Atendimentos!A1',
+    });
+    if (!check.data.values || check.data.values[0][0] !== 'ID') throw new Error('sem cabecalho');
+  } catch(e) {
     const cab = ['ID','Data/Hora','Nome','CPF','WhatsApp','E-mail',
       'Empresa','CNPJ','Cargo','Salário','Admissão','Saída',
       'Desligamento','TRCT','FGTS','Pedidos',
@@ -118,7 +105,6 @@ async function salvarSheets(auth, sheetId, linha) {
       requestBody: { values: [cab] },
     });
   }
-
   await sheets.spreadsheets.values.append({
     spreadsheetId: sheetId,
     range: 'Atendimentos!A1',
@@ -127,19 +113,17 @@ async function salvarSheets(auth, sheetId, linha) {
   });
 }
 
-// ── ROTA PRINCIPAL: salvar atendimento ────────────────────────────────────
 app.post('/salvar', async (req, res) => {
   try {
     const d = req.body;
     const agora = new Date();
     const dataFmt = agora.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
-
     const id = d._id || require('crypto').randomUUID();
-    const nomeCliente = d.nomeCliente || '';
-    const nomeEmpresa = d.nomeEmpresa ||
-      (d.empresas && d.empresas[0] ? d.empresas[0].nome : '') || '';
 
-    // Dados para os templates
+    const nomeCliente = (d.nomeCliente || '').trim();
+    const nomeEmpresa = (d.nomeEmpresa ||
+      (d.empresas && d.empresas[0] ? d.empresas[0].nome : '') || '').trim();
+
     const dadosTemplate = {
       nomeCliente:   nomeCliente.toUpperCase(),
       nacionalidade: d.nacionalidade || 'brasileiro(a)',
@@ -152,73 +136,68 @@ app.post('/salvar', async (req, res) => {
                        .filter(Boolean).join(', '),
       cep:           d.cep           || '',
       nomeEmpresa:   nomeEmpresa,
-      dataExtenso:   dataExtenso(agora),
+      dataExtenso:   dataExtenso(),
     };
 
-    // Google Auth
-    const auth = await getGoogleAuth();
-    const FOLDER_ID = process.env.FOLDER_ID;
-    const SHEET_ID  = process.env.SHEET_ID;
+    const auth  = await getGoogleAuth();
+    const drive = google.drive({ version: 'v3', auth });
+    const SHEET_ID = process.env.SHEET_ID;
 
-    // Nome da pasta
     const hoje = agora.toLocaleDateString('pt-BR').replace(/\//g, '-');
     const nomePasta = (nomeCliente && nomeEmpresa)
       ? `${nomeCliente.toUpperCase()} x ${nomeEmpresa.toUpperCase()} — ${hoje}`
       : `${nomeCliente.toUpperCase() || 'ATENDIMENTO'} — ${hoje}`;
 
-    const pastaId = await obterPasta(auth, FOLDER_ID, nomePasta);
+    const pastaId = await obterPasta(drive, nomePasta);
 
-    // Gerar e fazer upload dos 4 documentos
     const docs = [
-      { template: 'TEMPLATE_CONTRATO_DE_HONORARIOS.docx',      nome: `1_Contrato_${nomeCliente.replace(/\s+/g,'_')}.docx` },
-      { template: 'TEMPLATE_PROCURACAO.docx',                   nome: `2_Procuracao_${nomeCliente.replace(/\s+/g,'_')}.docx` },
-      { template: 'TEMPLATE_DECLARACAO_HIPOSSUFICIENCIA.docx',  nome: `3_Declaracao_${nomeCliente.replace(/\s+/g,'_')}.docx` },
-      { template: 'TEMPLATE_TERMO_CIENCIA.docx',                nome: `4_Termo_Ciencia_${nomeCliente.replace(/\s+/g,'_')}.docx` },
+      { template: 'TEMPLATE_CONTRATO_DE_HONORARIOS.docx',     nome: `1_Contrato_${nomeCliente.replace(/\s+/g,'_')}.docx` },
+      { template: 'TEMPLATE_PROCURACAO.docx',                  nome: `2_Procuracao_${nomeCliente.replace(/\s+/g,'_')}.docx` },
+      { template: 'TEMPLATE_DECLARACAO_HIPOSSUFICIENCIA.docx', nome: `3_Declaracao_${nomeCliente.replace(/\s+/g,'_')}.docx` },
+      { template: 'TEMPLATE_TERMO_CIENCIA.docx',               nome: `4_Termo_Ciencia_${nomeCliente.replace(/\s+/g,'_')}.docx` },
     ];
 
     const links = {};
     for (const doc of docs) {
-      const buffer = preencherTemplate(doc.template, dadosTemplate);
-      const arquivo = await uploadDrive(auth, pastaId, doc.nome, buffer,
+      const buffer  = preencherTemplate(doc.template, dadosTemplate);
+      const arquivo = await uploadDrive(drive, pastaId, doc.nome, buffer,
         'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
       links[doc.nome] = arquivo.webViewLink;
     }
 
-    // Salvar no Sheets
-    const pedidos = Array.isArray(d.pedidos) ? d.pedidos.join(', ') : (d.pedidos || '');
-    const docs_ent = Array.isArray(d.docsEntregues) ? d.docsEntregues.join(', ') : (d.docsEntregues || '');
-    await salvarSheets(auth, SHEET_ID, [
-      id, dataFmt, nomeCliente, d.cpf||'', d.whatsapp||'', d.email||'',
-      nomeEmpresa, d.cnpj||'', d.cargoReal||'', d.salario||'',
-      fmtData(d.dataAdmissao), fmtData(d.dataSaida),
-      d.formaDesligamento||'', d.trctPago||'', d.fgts||'',
-      pedidos, docs_ent, d.docsPendentes||'',
-      d.prazoBienal||'', d.urgencia||'',
-      d.viabilidade||'', d.advogado||'', d.atendente||'',
-      d.comoConheceu||'', d.resumoCaso||'', d.proximoPasso||'',
-    ]);
+    if (SHEET_ID) {
+      const pedidos = Array.isArray(d.pedidos) ? d.pedidos.join(', ') : (d.pedidos || '');
+      const docsEnt = Array.isArray(d.docsEntregues) ? d.docsEntregues.join(', ') : (d.docsEntregues || '');
+      await salvarSheets(auth, SHEET_ID, [
+        id, dataFmt, nomeCliente, d.cpf||'', d.whatsapp||'', d.email||'',
+        nomeEmpresa, d.cnpj||'', d.cargoReal||'', d.salario||'',
+        fmtData(d.dataAdmissao), fmtData(d.dataSaida),
+        d.formaDesligamento||'', d.trctPago||'', d.fgts||'',
+        pedidos, docsEnt, d.docsPendentes||'',
+        d.prazoBienal||'', d.urgencia||'',
+        d.viabilidade||'', d.advogado||'', d.atendente||'',
+        d.comoConheceu||'', d.resumoCaso||'', d.proximoPasso||'',
+      ]);
+    }
 
-    // URL da pasta
-    const drive = google.drive({ version: 'v3', auth });
-    const pasta = await drive.files.get({ fileId: pastaId, fields: 'webViewLink' });
+    const pastaInfo = await drive.files.get({ fileId: pastaId, fields: 'webViewLink,name' });
 
     res.json({
       ok: true, id,
-      pastaUrl: pasta.data.webViewLink,
+      pastaUrl: pastaInfo.data.webViewLink,
       docs: links,
       msg: `4 documentos gerados na pasta "${nomePasta}"`,
     });
 
   } catch (err) {
-    console.error('Erro /salvar:', err);
+    console.error('Erro /salvar:', err.message, err.errors || '');
     res.status(500).json({ ok: false, erro: err.message });
   }
 });
 
-// ── ROTA: listar atendimentos ─────────────────────────────────────────────
 app.get('/listar', async (req, res) => {
   try {
-    const auth  = await getGoogleAuth();
+    const auth   = await getGoogleAuth();
     const sheets = google.sheets({ version: 'v4', auth });
     const r = await sheets.spreadsheets.values.get({
       spreadsheetId: process.env.SHEET_ID,
