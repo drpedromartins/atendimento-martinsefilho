@@ -67,19 +67,13 @@ async function uploadDrive(drive, pastaId, nomeArq, buffer, mimeType) {
   return res.data;
 }
 
-async function obterPasta(drive, nomePasta) {
-  const busca = await drive.files.list({
-    q: `name='${nomePasta}' and mimeType='application/vnd.google-apps.folder' and trashed=false`,
-    fields: 'files(id,name)',
-  });
-  if (busca.data.files.length > 0) return busca.data.files[0].id;
-
+async function criarPasta(drive, nomePasta) {
   const criar = await drive.files.create({
     requestBody: {
       name: nomePasta,
       mimeType: 'application/vnd.google-apps.folder',
     },
-    fields: 'id',
+    fields: 'id,webViewLink',
   });
   return criar.data.id;
 }
@@ -145,10 +139,10 @@ app.post('/salvar', async (req, res) => {
 
     const hoje = agora.toLocaleDateString('pt-BR').replace(/\//g, '-');
     const nomePasta = (nomeCliente && nomeEmpresa)
-      ? `${nomeCliente.toUpperCase()} x ${nomeEmpresa.toUpperCase()} — ${hoje}`
-      : `${nomeCliente.toUpperCase() || 'ATENDIMENTO'} — ${hoje}`;
+      ? `${nomeCliente.toUpperCase()} x ${nomeEmpresa.toUpperCase()} - ${hoje}`
+      : `${nomeCliente.toUpperCase() || 'ATENDIMENTO'} - ${hoje}`;
 
-    const pastaId = await obterPasta(drive, nomePasta);
+    const pastaId = await criarPasta(drive, nomePasta);
 
     const docs = [
       { template: 'TEMPLATE_CONTRATO_DE_HONORARIOS.docx',     nome: `1_Contrato_${nomeCliente.replace(/\s+/g,'_')}.docx` },
@@ -190,7 +184,7 @@ app.post('/salvar', async (req, res) => {
     });
 
   } catch (err) {
-    console.error('Erro /salvar:', err.message, err.errors || '');
+    console.error('Erro /salvar:', err.message, JSON.stringify(err.errors || ''));
     res.status(500).json({ ok: false, erro: err.message });
   }
 });
