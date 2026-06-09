@@ -2,9 +2,8 @@ const express    = require('express');
 const cors       = require('cors');
 const path       = require('path');
 const fs         = require('fs');
-const PizZip     = require('pizzip');
-const Docxtemplater = require('docxtemplater');
 const { google } = require('googleapis');
+const AdmZip     = require('adm-zip');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -39,29 +38,30 @@ function fmtData(d) {
 
 function preencherTemplate(nomeArq, dados) {
   const caminho = path.join(__dirname, 'templates', nomeArq);
-  const conteudo = fs.readFileSync(caminho, 'binary');
-  const zip = new PizZip(conteudo);
-  const doc = new Docxtemplater(zip, {
-    paragraphLoop: true,
-    linebreaks: true,
-    nullGetter: () => '',
+  const zip = new AdmZip(caminho);
+  const novoZip = new AdmZip();
+
+  zip.getEntries().forEach(entry => {
+    if (entry.entryName === 'word/document.xml') {
+      let xml = entry.getData().toString('utf8');
+      for (const [chave, valor] of Object.entries(dados)) {
+        const marcador = '{{' + chave + '}}';
+        xml = xml.split(marcador).join(valor || '');
+      }
+      novoZip.addFile('word/document.xml', Buffer.from(xml, 'utf8'));
+    } else {
+      novoZip.addFile(entry.entryName, entry.getData());
+    }
   });
-  doc.render(dados);
-  return doc.getZip().generate({ type: 'nodebuffer', compression: 'DEFLATE' });
+
+  return novoZip.toBuffer();
 }
 
 async function uploadDrive(drive, pastaId, nomeArq, buffer, mimeType) {
   const { Readable } = require('stream');
   const res = await drive.files.create({
-    requestBody: {
-      name: nomeArq,
-      parents: [pastaId],
-      mimeType,
-    },
-    media: {
-      mimeType,
-      body: Readable.from(buffer),
-    },
+    requestBody: { name: nomeArq, parents: [pastaId], mimeType },
+    media: { mimeType, body: Readable.from(buffer) },
     fields: 'id,webViewLink',
   });
   return res.data;
@@ -69,10 +69,7 @@ async function uploadDrive(drive, pastaId, nomeArq, buffer, mimeType) {
 
 async function criarPasta(drive, nomePasta) {
   const criar = await drive.files.create({
-    requestBody: {
-      name: nomePasta,
-      mimeType: 'application/vnd.google-apps.folder',
-    },
+    requestBody: { name: nomePasta, mimeType: 'application/vnd.google-apps.folder' },
     fields: 'id,webViewLink',
   });
   return criar.data.id;
@@ -82,10 +79,9 @@ async function salvarSheets(auth, sheetId, linha) {
   const sheets = google.sheets({ version: 'v4', auth });
   try {
     const check = await sheets.spreadsheets.values.get({
-      spreadsheetId: sheetId,
-      range: 'Atendimentos!A1',
+      spreadsheetId: sheetId, range: 'Atendimentos!A1',
     });
-    if (!check.data.values || check.data.values[0][0] !== 'ID') throw new Error('sem cabecalho');
+    if (!check.data.values || check.data.values[0][0] !== 'ID') throw new Error('sem cab');
   } catch(e) {
     const cab = ['ID','Data/Hora','Nome','CPF','WhatsApp','E-mail',
       'Empresa','CNPJ','Cargo','Salário','Admissão','Saída',
@@ -93,26 +89,22 @@ async function salvarSheets(auth, sheetId, linha) {
       'Docs Entregues','Docs Pendentes','Prazo Bienal','Urgência',
       'Viabilidade','Advogado','Atendente','Canal','Resumo','Próximo Passo'];
     await sheets.spreadsheets.values.update({
-      spreadsheetId: sheetId,
-      range: 'Atendimentos!A1',
-      valueInputOption: 'RAW',
-      requestBody: { values: [cab] },
+      spreadsheetId: sheetId, range: 'Atendimentos!A1',
+      valueInputOption: 'RAW', requestBody: { values: [cab] },
     });
   }
   await sheets.spreadsheets.values.append({
-    spreadsheetId: sheetId,
-    range: 'Atendimentos!A1',
-    valueInputOption: 'RAW',
-    requestBody: { values: [linha] },
+    spreadsheetId: sheetId, range: 'Atendimentos!A1',
+    valueInputOption: 'RAW', requestBody: { values: [linha] },
   });
 }
 
 app.post('/salvar', async (req, res) => {
   try {
     const d = req.body;
-    const agora = new Date();
+    const agora   = new Date();
     const dataFmt = agora.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
-    const id = d._id || require('crypto').randomUUID();
+    const id      = d._id || require('crypto').randomUUID();
 
     const nomeCliente = (d.nomeCliente || '').trim();
     const nomeEmpresa = (d.nomeEmpresa ||
@@ -137,7 +129,7 @@ app.post('/salvar', async (req, res) => {
     const drive = google.drive({ version: 'v3', auth });
     const SHEET_ID = process.env.SHEET_ID;
 
-    const hoje = agora.toLocaleDateString('pt-BR').replace(/\//g, '-');
+    const hoje      = agora.toLocaleDateString('pt-BR').replace(/\//g, '-');
     const nomePasta = (nomeCliente && nomeEmpresa)
       ? `${nomeCliente.toUpperCase()} x ${nomeEmpresa.toUpperCase()} - ${hoje}`
       : `${nomeCliente.toUpperCase() || 'ATENDIMENTO'} - ${hoje}`;
@@ -184,7 +176,7 @@ app.post('/salvar', async (req, res) => {
     });
 
   } catch (err) {
-    console.error('Erro /salvar:', err.message, JSON.stringify(err.errors || ''));
+    console.error('Erro /salvar:', err.message, JSON.stringify(err.errors||''));
     res.status(500).json({ ok: false, erro: err.message });
   }
 });
@@ -194,8 +186,7 @@ app.get('/listar', async (req, res) => {
     const auth   = await getGoogleAuth();
     const sheets = google.sheets({ version: 'v4', auth });
     const r = await sheets.spreadsheets.values.get({
-      spreadsheetId: process.env.SHEET_ID,
-      range: 'Atendimentos!A:Z',
+      spreadsheetId: process.env.SHEET_ID, range: 'Atendimentos!A:Z',
     });
     const rows = r.data.values || [];
     if (rows.length <= 1) return res.json({ ok: true, fichas: [] });
