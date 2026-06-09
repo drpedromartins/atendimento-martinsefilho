@@ -67,9 +67,14 @@ async function uploadDrive(drive, pastaId, nomeArq, buffer, mimeType) {
   return res.data;
 }
 
-async function criarPasta(drive, nomePasta) {
+async function criarPasta(drive, nomePasta, pastaRaizId) {
+  const body = {
+    name: nomePasta,
+    mimeType: 'application/vnd.google-apps.folder',
+  };
+  if (pastaRaizId) body.parents = [pastaRaizId];
   const criar = await drive.files.create({
-    requestBody: { name: nomePasta, mimeType: 'application/vnd.google-apps.folder' },
+    requestBody: body,
     fields: 'id,webViewLink',
   });
   return criar.data.id;
@@ -125,16 +130,17 @@ app.post('/salvar', async (req, res) => {
       dataExtenso:   dataExtenso(),
     };
 
-    const auth  = await getGoogleAuth();
-    const drive = google.drive({ version: 'v3', auth });
-    const SHEET_ID = process.env.SHEET_ID;
+    const auth     = await getGoogleAuth();
+    const drive    = google.drive({ version: 'v3', auth });
+    const SHEET_ID  = process.env.SHEET_ID;
+    const FOLDER_ID = process.env.FOLDER_ID;
 
     const hoje      = agora.toLocaleDateString('pt-BR').replace(/\//g, '-');
     const nomePasta = (nomeCliente && nomeEmpresa)
       ? `${nomeCliente.toUpperCase()} x ${nomeEmpresa.toUpperCase()} - ${hoje}`
       : `${nomeCliente.toUpperCase() || 'ATENDIMENTO'} - ${hoje}`;
 
-    const pastaId = await criarPasta(drive, nomePasta);
+    const pastaId = await criarPasta(drive, nomePasta, FOLDER_ID);
 
     const docs = [
       { template: 'TEMPLATE_CONTRATO_DE_HONORARIOS.docx',     nome: `1_Contrato_${nomeCliente.replace(/\s+/g,'_')}.docx` },
