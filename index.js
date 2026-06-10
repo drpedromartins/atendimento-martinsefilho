@@ -71,7 +71,6 @@ async function criarPasta(drive, nomePasta) {
     },
     fields: 'id,webViewLink',
   });
-  // Compartilhar automaticamente com o escritório
   try {
     await drive.permissions.create({
       fileId: res.data.id,
@@ -179,7 +178,10 @@ app.post('/salvar', async (req, res) => {
       ]);
     }
 
-    const pastaInfo = await drive.files.get({ fileId: pastaId, fields: 'webViewLink,name' });
+    const pastaInfo = await drive.files.get({
+      fileId: pastaId,
+      fields: 'webViewLink,name',
+    });
 
     res.json({
       ok: true, id,
@@ -199,3 +201,18 @@ app.get('/listar', async (req, res) => {
     const auth   = await getGoogleAuth();
     const sheets = google.sheets({ version: 'v4', auth });
     const r = await sheets.spreadsheets.values.get({
+      spreadsheetId: process.env.SHEET_ID, range: 'Atendimentos!A:Z',
+    });
+    const rows = r.data.values || [];
+    if (rows.length <= 1) return res.json({ ok: true, fichas: [] });
+    const [cab, ...dados] = rows;
+    const fichas = dados.map(row => Object.fromEntries(cab.map((c,i) => [c, row[i]||''])));
+    res.json({ ok: true, fichas });
+  } catch (err) {
+    res.status(500).json({ ok: false, erro: err.message });
+  }
+});
+
+app.get('/ping', (req, res) => res.json({ ok: true, msg: 'Martins & Filho — online' }));
+
+app.listen(PORT, () => console.log(`Servidor rodando na porta ${PORT}`));
