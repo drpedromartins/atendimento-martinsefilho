@@ -56,7 +56,6 @@ function preencherTemplate(nomeArq, dados) {
 async function uploadDrive(drive, pastaId, nomeArq, buffer, mimeType) {
   const { Readable } = require('stream');
   const res = await drive.files.create({
-    supportsAllDrives: true,
     requestBody: { name: nomeArq, parents: [pastaId], mimeType },
     media: { mimeType, body: Readable.from(buffer) },
     fields: 'id,webViewLink',
@@ -64,27 +63,29 @@ async function uploadDrive(drive, pastaId, nomeArq, buffer, mimeType) {
   return res.data;
 }
 
-async function criarPasta(drive, nomePasta, pastaRaizId) {
-  const body = {
-    name: nomePasta,
-    mimeType: 'application/vnd.google-apps.folder',
-  };
-  if (pastaRaizId) body.parents = [pastaRaizId];
-  const criar = await drive.files.create({
-    supportsAllDrives: true,
-    requestBody: body,
+async function criarPasta(drive, nomePasta) {
+  const res = await drive.files.create({
+    requestBody: {
+      name: nomePasta,
+      mimeType: 'application/vnd.google-apps.folder',
+    },
     fields: 'id,webViewLink',
   });
-  return criar.data.id;
-}
-
-async function getPastaUrl(drive, pastaId) {
-  const res = await drive.files.get({
-    fileId: pastaId,
-    supportsAllDrives: true,
-    fields: 'webViewLink,name',
-  });
-  return res.data.webViewLink;
+  // Compartilhar automaticamente com o escritório
+  try {
+    await drive.permissions.create({
+      fileId: res.data.id,
+      requestBody: {
+        type: 'user',
+        role: 'writer',
+        emailAddress: 'pedromartins@pedromartins.adv.br',
+      },
+      sendNotificationEmail: false,
+    });
+  } catch(e) {
+    console.log('Aviso compartilhamento:', e.message);
+  }
+  return res.data.id;
 }
 
 async function salvarSheets(auth, sheetId, linha) {
@@ -137,17 +138,16 @@ app.post('/salvar', async (req, res) => {
       dataExtenso:   dataExtenso(),
     };
 
-    const auth      = await getGoogleAuth();
-    const drive     = google.drive({ version: 'v3', auth });
-    const SHEET_ID  = process.env.SHEET_ID;
-    const FOLDER_ID = process.env.FOLDER_ID;
+    const auth     = await getGoogleAuth();
+    const drive    = google.drive({ version: 'v3', auth });
+    const SHEET_ID = process.env.SHEET_ID;
 
     const hoje      = agora.toLocaleDateString('pt-BR').replace(/\//g, '-');
     const nomePasta = (nomeCliente && nomeEmpresa)
       ? `${nomeCliente.toUpperCase()} x ${nomeEmpresa.toUpperCase()} - ${hoje}`
       : `${nomeCliente.toUpperCase() || 'ATENDIMENTO'} - ${hoje}`;
 
-    const pastaId = await criarPasta(drive, nomePasta, FOLDER_ID);
+    const pastaId = await criarPasta(drive, nomePasta);
 
     const docs = [
       { template: 'TEMPLATE_CONTRATO_DE_HONORARIOS.docx',     nome: `1_Contrato_${nomeCliente.replace(/\s+/g,'_')}.docx` },
@@ -179,13 +179,13 @@ app.post('/salvar', async (req, res) => {
       ]);
     }
 
-    const pastaUrl = await getPastaUrl(drive, pastaId);
+    const pastaInfo = await drive.files.get({ fileId: pastaId, fields: 'webViewLink,name' });
 
     res.json({
       ok: true, id,
-      pastaUrl,
+      pastaUrl: pastaInfo.data.webViewLink,
       docs: links,
-      msg: `4 documentos gerados na pasta "${nomePasta}"`,
+      msg: `4 documentos gerados. Acesse pelo link da pasta.`,
     });
 
   } catch (err) {
@@ -199,18 +199,3 @@ app.get('/listar', async (req, res) => {
     const auth   = await getGoogleAuth();
     const sheets = google.sheets({ version: 'v4', auth });
     const r = await sheets.spreadsheets.values.get({
-      spreadsheetId: process.env.SHEET_ID, range: 'Atendimentos!A:Z',
-    });
-    const rows = r.data.values || [];
-    if (rows.length <= 1) return res.json({ ok: true, fichas: [] });
-    const [cab, ...dados] = rows;
-    const fichas = dados.map(row => Object.fromEntries(cab.map((c,i) => [c, row[i]||''])));
-    res.json({ ok: true, fichas });
-  } catch (err) {
-    res.status(500).json({ ok: false, erro: err.message });
-  }
-});
-
-app.get('/ping', (req, res) => res.json({ ok: true, msg: 'Martins & Filho — online' }));
-
-app.listen(PORT, () => console.log(`Servidor rodando na porta ${PORT}`));
