@@ -1,7 +1,6 @@
 const express    = require('express');
 const cors       = require('cors');
 const path       = require('path');
-const fs         = require('fs');
 const { google } = require('googleapis');
 const AdmZip     = require('adm-zip');
 
@@ -40,26 +39,24 @@ function preencherTemplate(nomeArq, dados) {
   const caminho = path.join(__dirname, 'templates', nomeArq);
   const zip = new AdmZip(caminho);
   const novoZip = new AdmZip();
-
   zip.getEntries().forEach(entry => {
     if (entry.entryName === 'word/document.xml') {
       let xml = entry.getData().toString('utf8');
       for (const [chave, valor] of Object.entries(dados)) {
-        const marcador = '{{' + chave + '}}';
-        xml = xml.split(marcador).join(valor || '');
+        xml = xml.split('{{' + chave + '}}').join(valor || '');
       }
       novoZip.addFile('word/document.xml', Buffer.from(xml, 'utf8'));
     } else {
       novoZip.addFile(entry.entryName, entry.getData());
     }
   });
-
   return novoZip.toBuffer();
 }
 
 async function uploadDrive(drive, pastaId, nomeArq, buffer, mimeType) {
   const { Readable } = require('stream');
   const res = await drive.files.create({
+    supportsAllDrives: true,
     requestBody: { name: nomeArq, parents: [pastaId], mimeType },
     media: { mimeType, body: Readable.from(buffer) },
     fields: 'id,webViewLink',
@@ -74,10 +71,20 @@ async function criarPasta(drive, nomePasta, pastaRaizId) {
   };
   if (pastaRaizId) body.parents = [pastaRaizId];
   const criar = await drive.files.create({
+    supportsAllDrives: true,
     requestBody: body,
     fields: 'id,webViewLink',
   });
   return criar.data.id;
+}
+
+async function getPastaUrl(drive, pastaId) {
+  const res = await drive.files.get({
+    fileId: pastaId,
+    supportsAllDrives: true,
+    fields: 'webViewLink,name',
+  });
+  return res.data.webViewLink;
 }
 
 async function salvarSheets(auth, sheetId, linha) {
@@ -130,8 +137,8 @@ app.post('/salvar', async (req, res) => {
       dataExtenso:   dataExtenso(),
     };
 
-    const auth     = await getGoogleAuth();
-    const drive    = google.drive({ version: 'v3', auth });
+    const auth      = await getGoogleAuth();
+    const drive     = google.drive({ version: 'v3', auth });
     const SHEET_ID  = process.env.SHEET_ID;
     const FOLDER_ID = process.env.FOLDER_ID;
 
@@ -172,11 +179,11 @@ app.post('/salvar', async (req, res) => {
       ]);
     }
 
-    const pastaInfo = await drive.files.get({ fileId: pastaId, fields: 'webViewLink,name' });
+    const pastaUrl = await getPastaUrl(drive, pastaId);
 
     res.json({
       ok: true, id,
-      pastaUrl: pastaInfo.data.webViewLink,
+      pastaUrl,
       docs: links,
       msg: `4 documentos gerados na pasta "${nomePasta}"`,
     });
