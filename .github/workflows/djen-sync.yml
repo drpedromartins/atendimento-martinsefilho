@@ -1,0 +1,170 @@
+name: DJEN Sync — Sincronização de Publicações
+
+# Roda 4x por dia: 6h, 9h, 12h e 16h30 BRT (horários em UTC = BRT+3)
+# Isso garante que mesmo que uma execução falhe, a próxima captura as publicações
+on:
+  schedule:
+    - cron: '0 9 * * 1-5'    # 6h BRT (dias úteis)
+    - cron: '0 12 * * 1-5'   # 9h BRT (dias úteis)
+    - cron: '0 15 * * 1-5'   # 12h BRT (dias úteis)
+    - cron: '30 19 * * 1-5'  # 16h30 BRT (dias úteis)
+  workflow_dispatch:          # Permite executar manualmente
+    inputs:
+      data_inicio:
+        description: 'Data início (YYYY-MM-DD). Padrão: hoje'
+        required: false
+        default: ''
+      data_fim:
+        description: 'Data fim (YYYY-MM-DD). Padrão: hoje'
+        required: false
+        default: ''
+
+jobs:
+  sync-djen:
+    name: Sincronizar publicações DJEN
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Calcular datas de referência
+        id: datas
+        run: |
+          # Usar data fornecida manualmente ou calcular automaticamente
+          if [ -n "${{ github.event.inputs.data_inicio }}" ]; then
+            DATA_INICIO="${{ github.event.inputs.data_inicio }}"
+            DATA_FIM="${{ github.event.inputs.data_fim || github.event.inputs.data_inicio }}"
+          else
+            # Buscar os últimos 3 dias para não perder nada
+            DATA_FIM=$(TZ="America/Sao_Paulo" date +%Y-%m-%d)
+            DATA_INICIO=$(TZ="America/Sao_Paulo" date -d "3 days ago" +%Y-%m-%d)
+          fi
+          echo "data_inicio=$DATA_INICIO" >> $GITHUB_OUTPUT
+          echo "data_fim=$DATA_FIM" >> $GITHUB_OUTPUT
+          echo "data_sync=$DATA_FIM" >> $GITHUB_OUTPUT
+          echo "Buscando publicações de $DATA_INICIO até $DATA_FIM"
+
+      - name: Buscar publicações DJEN — OAB 09158/DF (Pedro Henrique)
+        id: djen_09158
+        run: |
+          echo "Buscando OAB 09158/DF..."
+          RESPONSE=$(curl -s --max-time 30 --retry 3 --retry-delay 10 \
+            "https://comunicaapi.pje.jus.br/api/v1/comunicacao?numeroOab=09158&ufOab=DF&dataDisponibilizacaoInicio=${{ steps.datas.outputs.data_inicio }}&dataDisponibilizacaoFim=${{ steps.datas.outputs.data_fim }}&pagina=1&itensPorPagina=100&meio=D" \
+            -H "Accept: application/json" \
+            -H "User-Agent: Mozilla/5.0 (compatible; MartinsFilhoSync/1.0)")
+          HTTP_STATUS=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print('ok')" 2>/dev/null && echo "200" || echo "error")
+          if [ "$HTTP_STATUS" = "200" ]; then
+            COUNT=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('items',d.get('comunicacoes',[]))))" 2>/dev/null || echo "0")
+            echo "Encontradas $COUNT publicações para OAB 09158"
+            echo "$RESPONSE" > /tmp/pubs_09158.json
+          else
+            echo "Erro ao buscar OAB 09158: $RESPONSE" | head -c 200
+            echo "[]" | python3 -c "import json; print(json.dumps({'items':[]}))" > /tmp/pubs_09158.json
+          fi
+
+      - name: Buscar publicações DJEN — OAB 60348/DF (Pedro Martins Filho)
+        id: djen_60348
+        run: |
+          echo "Buscando OAB 60348/DF..."
+          RESPONSE=$(curl -s --max-time 30 --retry 3 --retry-delay 10 \
+            "https://comunicaapi.pje.jus.br/api/v1/comunicacao?numeroOab=60348&ufOab=DF&dataDisponibilizacaoInicio=${{ steps.datas.outputs.data_inicio }}&dataDisponibilizacaoFim=${{ steps.datas.outputs.data_fim }}&pagina=1&itensPorPagina=100&meio=D" \
+            -H "Accept: application/json" \
+            -H "User-Agent: Mozilla/5.0 (compatible; MartinsFilhoSync/1.0)")
+          HTTP_STATUS=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print('ok')" 2>/dev/null && echo "200" || echo "error")
+          if [ "$HTTP_STATUS" = "200" ]; then
+            COUNT=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('items',d.get('comunicacoes',[]))))" 2>/dev/null || echo "0")
+            echo "Encontradas $COUNT publicações para OAB 60348"
+            echo "$RESPONSE" > /tmp/pubs_60348.json
+          else
+            echo "Erro ao buscar OAB 60348: $RESPONSE" | head -c 200
+            echo "[]" | python3 -c "import json; print(json.dumps({'items':[]}))" > /tmp/pubs_60348.json
+          fi
+
+      - name: Buscar publicações DJEN — OAB 38424/DF (OAB monitorada)
+        id: djen_38424
+        run: |
+          echo "Buscando OAB 38424/DF..."
+          RESPONSE=$(curl -s --max-time 30 --retry 3 --retry-delay 10 \
+            "https://comunicaapi.pje.jus.br/api/v1/comunicacao?numeroOab=38424&ufOab=DF&dataDisponibilizacaoInicio=${{ steps.datas.outputs.data_inicio }}&dataDisponibilizacaoFim=${{ steps.datas.outputs.data_fim }}&pagina=1&itensPorPagina=100&meio=D" \
+            -H "Accept: application/json" \
+            -H "User-Agent: Mozilla/5.0 (compatible; MartinsFilhoSync/1.0)")
+          HTTP_STATUS=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print('ok')" 2>/dev/null && echo "200" || echo "error")
+          if [ "$HTTP_STATUS" = "200" ]; then
+            COUNT=$(echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('items',d.get('comunicacoes',[]))))" 2>/dev/null || echo "0")
+            echo "Encontradas $COUNT publicações para OAB 38424"
+            echo "$RESPONSE" > /tmp/pubs_38424.json
+          else
+            echo "Erro ao buscar OAB 38424: $RESPONSE" | head -c 200
+            echo "[]" | python3 -c "import json; print(json.dumps({'items':[]}))" > /tmp/pubs_38424.json
+          fi
+
+      - name: Consolidar e enviar ao portal
+        env:
+          PORTAL_URL: ${{ secrets.PORTAL_URL }}
+          DJEN_INGEST_SECRET: ${{ secrets.DJEN_INGEST_SECRET }}
+        run: |
+          python3 << 'PYEOF'
+          import json, urllib.request, urllib.error, os, sys
+
+          portal_url = os.environ.get("PORTAL_URL", "https://app.martinsefilho.adv.br")
+          secret = os.environ.get("DJEN_INGEST_SECRET", "")
+          data_sync = "${{ steps.datas.outputs.data_sync }}"
+
+          # Consolidar publicações de todos os arquivos
+          all_items = []
+          seen_hashes = set()
+
+          for fname in ["/tmp/pubs_09158.json", "/tmp/pubs_60348.json", "/tmp/pubs_38424.json"]:
+              try:
+                  with open(fname) as f:
+                      data = json.load(f)
+                  items = data.get("items", data.get("comunicacoes", []))
+                  for item in items:
+                      h = str(item.get("hash") or item.get("numeroComunicacao") or item.get("id", ""))
+                      if h and h not in seen_hashes:
+                          seen_hashes.add(h)
+                          all_items.append(item)
+              except Exception as e:
+                  print(f"Erro ao ler {fname}: {e}")
+
+          print(f"Total de publicações únicas: {len(all_items)}")
+
+          if not secret:
+              print("ERRO: DJEN_INGEST_SECRET não configurado nos secrets do repositório!")
+              sys.exit(1)
+
+          # Enviar ao portal em lotes de 50
+          BATCH_SIZE = 50
+          total_novas = 0
+          for i in range(0, max(1, len(all_items)), BATCH_SIZE):
+              batch = all_items[i:i+BATCH_SIZE]
+              payload = json.dumps({
+                  "secret": secret,
+                  "dataSync": data_sync,
+                  "publicacoes": batch
+              }).encode("utf-8")
+
+              req = urllib.request.Request(
+                  f"{portal_url}/api/djen-ingest",
+                  data=payload,
+                  headers={
+                      "Content-Type": "application/json",
+                      "User-Agent": "GitHubActions-DjenSync/1.0"
+                  },
+                  method="POST"
+              )
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as resp:
+                      result = json.loads(resp.read())
+                      novas = result.get("totalNovas", 0)
+                      total_novas += novas
+                      print(f"Lote {i//BATCH_SIZE + 1}: {novas} novas publicações inseridas")
+              except urllib.error.HTTPError as e:
+                  body = e.read().decode("utf-8", errors="replace")
+                  print(f"Erro HTTP {e.code}: {body[:200]}")
+                  sys.exit(1)
+              except Exception as e:
+                  print(f"Erro ao enviar lote: {e}")
+                  sys.exit(1)
+
+          print(f"Sincronização concluída. Total de novas publicações: {total_novas}")
+          PYEOF
