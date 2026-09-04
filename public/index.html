@@ -105,6 +105,8 @@ main{max-width:980px;margin:0 auto;padding:18px 14px 90px}
 #bar{position:fixed;bottom:0;left:0;right:0;background:#fff;border-top:1px solid var(--borda);padding:9px 20px;display:flex;align-items:center;justify-content:space-between;gap:8px;z-index:300;box-shadow:0 -4px 16px rgba(0,0,0,.08)}
 #status{font-size:12px;color:var(--txt3)}
 #status.ok{color:var(--verde)}
+#status.err{color:#B3261E}
+#pos-salvar a.btn{display:inline-flex;align-items:center;text-decoration:none}
 .btn-row{display:flex;gap:7px}
 .btn{font-family:'DM Sans',sans-serif;font-size:13px;font-weight:500;padding:8px 16px;border-radius:6px;border:1px solid var(--borda);background:var(--bg);color:var(--txt);cursor:pointer;transition:all .15s;display:flex;align-items:center;gap:5px}
 .btn:hover{background:var(--bg2)}
@@ -175,8 +177,11 @@ main{max-width:980px;margin:0 auto;padding:18px 14px 90px}
       <div class="f"><label>Data de nascimento</label><input id="dtnasc" type="date"></div>
       <div class="f"><label>Nacionalidade</label><input id="nacionalidade" type="text" placeholder="Brasileiro(a)" value="Brasileiro(a)"></div>
     </div>
-    <div class="grid g3">
+    <div class="grid g4">
       <div class="f"><label>Profissão</label><input id="profissao" type="text" placeholder="Ex: vendedor, operador, técnico..."></div>
+      <div class="f"><label>Tratamento (carta de boas-vindas)</label>
+        <select id="genero"><option value="">Deduzir do estado civil</option><option value="F">Feminino — bem-vinda</option><option value="M">Masculino — bem-vindo</option></select>
+      </div>
       <div class="f"><label>Estado civil</label>
         <select id="estcivil"><option value="">—</option><option>Solteiro(a)</option><option>Casado(a)</option><option>União estável</option><option>Divorciado(a)</option><option>Viúvo(a)</option></select>
       </div>
@@ -634,8 +639,9 @@ main{max-width:980px;margin:0 auto;padding:18px 14px 90px}
     <button class="btn" onclick="gerarResumo()">📋 Resumo jurídico</button>
     <button class="btn" onclick="limpar()">🔄 Novo</button>
     <button class="btn" onclick="window.print()">🖨️ Imprimir</button>
-    <button class="btn btn-g" onclick="salvar()">📥 Baixar documentos completos</button>
+    <button class="btn btn-g" id="btn-salvar" onclick="salvar()">💾 Salvar — Drive + documentos</button>
   </div>
+  <div id="pos-salvar" style="display:none;width:100%;margin-top:8px;padding-top:8px;border-top:1px solid var(--borda);display:none;flex-wrap:wrap;gap:8px;align-items:center"></div>
 </div>
 
 <div id="toast"></div>
@@ -652,8 +658,11 @@ main{max-width:980px;margin:0 auto;padding:18px 14px 90px}
 </div>
 
 <script>
-const WEBAPP = "https://atendimento-mf.onrender.com";
+// Vazio = usa o próprio endereço onde a página está aberta.
+// Assim o sistema funciona igual no Render, em outro servidor ou no computador.
+const WEBAPP = "";
 let PROTO = geraProto();
+let ULTIMO_PROTOCOLO = "";
 let URG = "";
 let empN = 0, jornN = 0, testN = 0;
 
@@ -872,6 +881,7 @@ function coletar() {
     nomeCliente:g('nomeCliente'), cpf:g('cpf'), rg:g('rg'), dataNascimento:g('dtnasc'),
     nacionalidade:g('nacionalidade'), profissao:g('profissao'),
     whatsapp:g('whatsapp'), estadoCivil:g('estcivil'), escolaridade:g('escol'),
+    genero:g('genero'),
     telAlt:g('telalt'), email:g('email'),
     cep:g('cep'), rua:g('rua'), numEnd:g('num_end'), complemento:g('complemento'),
     bairro:g('bairro'), cidade:g('cidade'), uf:g('uf'),
@@ -947,53 +957,116 @@ async function salvar() {
   const d = coletar();
   if(!d.nomeCliente){ toast('Preencha o nome do cliente','e'); return; }
 
-  const st = document.getElementById('status');
-  st.textContent = 'Salvando...'; st.className='';
-  toast('Salvando...','');
+  const st  = document.getElementById('status');
+  const btn = document.getElementById('btn-salvar');
+  const pos = document.getElementById('pos-salvar');
 
-  // 1. Registrar no Sheets
+  pos.style.display = 'none'; pos.innerHTML = '';
+  btn.disabled = true;
+  st.className = ''; st.textContent = 'Salvando atendimento...';
+  toast('Salvando atendimento...','');
+
   try {
-    const r = await fetch(WEBAPP+'/salvar',{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify(d)
+    // Uma única chamada: gera os 6 documentos, cria a pasta no Drive,
+    // sobe os arquivos e registra o atendimento na planilha.
+    const r = await fetch(WEBAPP + '/salvar', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(d)
     });
     const j = await r.json();
-    if(j.ok){
-      st.className='ok';
-      st.textContent='✓ Registrado no Sheets';
-    }
-  } catch(err){
-    console.log('Sheets erro:', err.message);
-  }
 
-  // 2. Gerar e baixar documentos Word
-  try {
-    toast('Gerando documentos...','');
-    const r2 = await fetch(WEBAPP+'/gerar-docs',{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify(d)
-    });
-    if(r2.ok){
-      const blob = await r2.blob();
-      const url = URL.createObjectURL(blob);
+    if(!j.ok){
+      st.className = 'err'; st.textContent = 'Erro ao salvar';
+      toast('Erro: ' + (j.erro || 'desconhecido'), 'e');
+      return;
+    }
+
+    ULTIMO_PROTOCOLO = j.protocolo;
+
+    // 1) baixa o .zip com os 6 documentos
+    if(j.zipUrl){
       const a = document.createElement('a');
-      const nome = (d.nomeCliente||'cliente').replace(/\s+/g,'_');
-      a.href = url; a.download = nome + '_documentos.zip';
-      document.body.appendChild(a); a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-      toast('✓ Documentos baixados!','s');
-      st.className='ok';
-      st.innerHTML='✓ Salvo — '+new Date().toLocaleTimeString('pt-BR');
+      a.href = WEBAPP + j.zipUrl; a.download = '';
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    }
+
+    // 2) abre a pasta do cliente no Drive
+    if(j.pastaUrl) window.open(j.pastaUrl, '_blank');
+
+    // 3) monta a barra de ações do atendimento salvo
+    pos.style.display = 'flex';
+    if(j.pastaUrl) pos.appendChild(botaoLink('📂 Abrir pasta no Drive', j.pastaUrl));
+    if(j.zipUrl)   pos.appendChild(botaoLink('⬇️ Baixar documentos de novo', WEBAPP + j.zipUrl));
+
+    if(j.zapsignDisponivel){
+      const b = document.createElement('button');
+      b.className = 'btn';
+      b.textContent = '✍️ Enviar para assinatura (ZapSign)';
+      b.onclick = () => enviarAssinatura(b);
+      pos.appendChild(b);
+    }
+
+    (j.avisos || []).forEach(av => {
+      const s = document.createElement('div');
+      s.style.cssText = 'width:100%;font-size:11px;line-height:1.45;color:#8B4A2B;background:#FBF0E6;border:1px solid #E8C9A8;border-radius:6px;padding:7px 10px';
+      s.textContent = '⚠️ ' + av;
+      pos.appendChild(s);
+    });
+
+    st.className = 'ok';
+    st.textContent = '✓ ' + (j.msg || 'Salvo') + ' — ' + new Date().toLocaleTimeString('pt-BR');
+    toast(j.pastaUrl ? '✓ Documentos no Drive e baixados!' : '✓ Documentos gerados!', 's');
+
+  } catch(err){
+    console.error(err);
+    st.className = 'err'; st.textContent = 'Erro de conexão';
+    toast('Erro de conexão com o servidor','e');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function botaoLink(texto, url){
+  const a = document.createElement('a');
+  a.className = 'btn'; a.href = url; a.target = '_blank';
+  a.textContent = texto;
+  return a;
+}
+
+// ── ASSINATURA ELETRÔNICA (ZapSign) ───────────────────────────────────
+async function enviarAssinatura(btn){
+  if(!ULTIMO_PROTOCOLO){ toast('Salve o atendimento primeiro','e'); return; }
+  if(!confirm('Enviar contrato, procuração, declaração e termo de ciência para o cliente assinar no ZapSign?')) return;
+
+  const original = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Enviando para assinatura...';
+
+  try {
+    const r = await fetch(WEBAPP + '/zapsign', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ protocolo: ULTIMO_PROTOCOLO, dados: coletar() })
+    });
+    const j = await r.json();
+
+    if(j.ok){
+      toast(j.msg, 's');
+      btn.textContent = '✓ ' + j.enviados.length + ' documento(s) enviado(s)';
+      const pos = document.getElementById('pos-salvar');
+      j.enviados.forEach(e => {
+        if(e.linkAssinatura) pos.appendChild(botaoLink('🔗 ' + e.documento, e.linkAssinatura));
+      });
+      (j.falhas || []).forEach(f => toast(f.documento + ': ' + f.erro, 'e'));
     } else {
-      const j = await r2.json();
-      toast('Erro: '+(j.erro||'desconhecido'),'e');
+      const erro = j.erro || (j.falhas && j.falhas[0] && j.falhas[0].erro) || 'falhou';
+      toast('ZapSign: ' + erro, 'e');
+      btn.disabled = false; btn.textContent = original;
     }
   } catch(err){
-    toast('Erro ao gerar documentos','e');
     console.error(err);
+    toast('Erro ao falar com o ZapSign','e');
+    btn.disabled = false; btn.textContent = original;
   }
 }
 

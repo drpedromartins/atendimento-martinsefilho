@@ -1,8 +1,23 @@
+'use strict';
+// ─────────────────────────────────────────────────────────────────────────────
+//  MARTINS & FILHO — Sistema de Atendimento Trabalhista
+//
+//  Ao salvar um atendimento, o sistema:
+//    1. gera 6 documentos (ficha, resumo jurídico, contrato, procuração,
+//       declaração de hipossuficiência e termo de ciência);
+//    2. cria a pasta "CLIENTE x EMPRESA — DATA" no Google Drive e sobe tudo;
+//    3. registra a linha na planilha de atendimentos;
+//    4. devolve o .zip para download e o link da pasta;
+//    5. opcionalmente envia os documentos para assinatura no ZapSign.
+// ─────────────────────────────────────────────────────────────────────────────
 const express = require('express');
 const cors    = require('cors');
 const path    = require('path');
-const { google } = require('googleapis');
-const AdmZip  = require('adm-zip');
+const crypto  = require('crypto');
+
+const G       = require('./lib/google');
+const Docs    = require('./lib/docs');
+const ZapSign = require('./lib/zapsign');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -11,328 +26,318 @@ app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
-function getGoogleAuth() {
-  const creds = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT);
-  return new google.auth.GoogleAuth({
-    credentials: creds,
-    scopes: ['https://www.googleapis.com/auth/spreadsheets'],
-  });
+const FOLDER_ID = (process.env.FOLDER_ID || '').trim();
+const SHEET_ID  = (process.env.SHEET_ID  || '').trim();
+
+// ── Guarda temporária dos atendimentos gerados ───────────────────────────────
+// Mantém o .zip e os documentos em memória por 1 hora, para que o navegador
+// possa baixar o arquivo e o ZapSign reaproveitar os mesmos documentos sem
+// precisar gerar tudo de novo.
+const CACHE   = new Map();
+const UMA_HORA = 60 * 60 * 1000;
+
+function guardar(id, conteudo) {
+  CACHE.set(id, { ...conteudo, criadoEm: Date.now() });
+  for (const [k, v] of CACHE) {
+    if (Date.now() - v.criadoEm > UMA_HORA) CACHE.delete(k);
+  }
 }
 
-function dataExtenso() {
-  const dt = new Date();
-  const meses = ['janeiro','fevereiro','março','abril','maio','junho',
-                 'julho','agosto','setembro','outubro','novembro','dezembro'];
-  return dt.getDate() + ' de ' + meses[dt.getMonth()] + ' de ' + dt.getFullYear();
+// ── Auxiliares ───────────────────────────────────────────────────────────────
+function novoProtocolo() {
+  const d = new Date();
+  const data = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+  return `AT-${data}-${crypto.randomInt(1000, 9999)}`;
 }
 
-function fmtData(d) {
-  if (!d) return '';
-  try { return new Date(d + 'T12:00:00').toLocaleDateString('pt-BR'); }
-  catch(e) { return d; }
+function nomeDaPasta(d, agora) {
+  const cliente = String(d.nomeCliente || 'ATENDIMENTO').toUpperCase().trim();
+  const empresa = String(
+    d.nomeEmpresa || (d.empresas && d.empresas[0] ? d.empresas[0].nome : '') || '',
+  ).toUpperCase().trim();
+  const hoje = agora.toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' }).replace(/\//g, '-');
+  return empresa ? `${cliente} x ${empresa} — ${hoje}` : `${cliente} — ${hoje}`;
 }
 
-function extrairDados(d) {
-  const nomeCliente = (d.nomeCliente || '').trim();
-  const nomeEmpresa = (d.nomeEmpresa ||
-    (d.empresas && d.empresas[0] ? d.empresas[0].nome : '') || '').trim();
-  return {
-    nomeCliente,
-    nomeEmpresa,
-    dadosTemplate: {
-      nomeCliente:   nomeCliente.toUpperCase(),
-      nacionalidade: d.nacionalidade || 'brasileiro(a)',
-      estadoCivil:   d.estadoCivil   || '',
-      profissao:     d.profissao     || '',
-      rg:            d.rg            || '',
-      sspUf:         d.uf            || 'DF',
-      cpf:           d.cpf           || '',
-      endereco:      d.endereco      || [d.rua, d.numEnd, d.complemento, d.bairro, d.cidade]
-                       .filter(Boolean).join(', '),
-      cep:           d.cep           || '',
-      nomeEmpresa:   nomeEmpresa,
-      dataExtenso:   dataExtenso(),
-    }
-  };
+const juntar = (v) => (Array.isArray(v) ? v.join(', ') : (v || ''));
+
+function linhaDaPlanilha(d, protocolo, agora, pastaUrl) {
+  return [
+    protocolo,
+    agora.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' }),
+    d.nomeCliente || '', d.cpf || '', d.whatsapp || '', d.email || '',
+    d.nomeEmpresa || (d.empresas && d.empresas[0] ? d.empresas[0].nome : '') || '',
+    d.cnpj || (d.empresas && d.empresas[0] ? d.empresas[0].cnpj : '') || '',
+    d.cargoReal || '', d.salario || '',
+    Docs.fmtData(d.dataAdmissao), Docs.fmtData(d.dataSaida),
+    d.formaDesligamento || '', d.trctPago || '', d.fgts || '',
+    juntar(d.pedidos), juntar(d.docsEntregues), d.docsPendentes || '',
+    Docs.fmtData(d.prazoBienal), d.urgencia || '',
+    d.viabilidade || '', d.advogado || '', d.atendente || '',
+    d.comoConheceu || '', d.resumoCaso || '', d.proximoPasso || '',
+    pastaUrl || '',
+  ];
 }
 
-function preencherTemplate(nomeArq, dados) {
-  const caminho = path.join(__dirname, 'templates', nomeArq);
-  const zip = new AdmZip(caminho);
-  const novoZip = new AdmZip();
-  zip.getEntries().forEach(function(entry) {
-    if (entry.entryName === 'word/document.xml') {
-      let xml = entry.getData().toString('utf8');
-      for (var chave in dados) {
-        xml = xml.split('{{' + chave + '}}').join(dados[chave] || '');
+// Mensagens de erro do Google traduzidas para linguagem de escritório
+function explicarErroDrive(err) {
+  const m = String(err && err.message ? err.message : err);
+  if (/storageQuotaExceeded|storage quota/i.test(m)) {
+    return 'O Google recusou o envio por cota de armazenamento: a conta de serviço não tem espaço próprio. '
+         + 'Solução: preencher a variável IMPERSONATE_USER no Render com o e-mail do escritório '
+         + '(exige delegação em todo o domínio no Admin do Google Workspace), ou mover a pasta para um Drive compartilhado.';
+  }
+  if (/File not found|notFound/i.test(m)) {
+    return 'A pasta informada em FOLDER_ID não foi encontrada. Confira o ID e compartilhe a pasta '
+         + `com a conta de serviço (${G.emailContaServico()}) como Editor.`;
+  }
+  if (/insufficient|forbidden|403/i.test(m)) {
+    return `Sem permissão na pasta do Drive. Compartilhe a pasta com ${G.emailContaServico()} como Editor.`;
+  }
+  return m;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  ROTA PRINCIPAL — salva o atendimento por completo
+// ─────────────────────────────────────────────────────────────────────────────
+app.post('/salvar', async (req, res) => {
+  const d = req.body || {};
+  const agora = new Date();
+  const protocolo = d._id || novoProtocolo();
+  const avisos = [];
+
+  if (!d.nomeCliente || !String(d.nomeCliente).trim()) {
+    return res.status(400).json({ ok: false, erro: 'Informe o nome do cliente antes de salvar.' });
+  }
+
+  // 1) Documentos — se isto falhar, não há o que salvar
+  let arquivos;
+  try {
+    arquivos = await Docs.gerarTodos(d, protocolo, agora);
+  } catch (err) {
+    console.error('Erro ao gerar documentos:', err);
+    return res.status(500).json({ ok: false, erro: 'Falha ao gerar os documentos: ' + err.message });
+  }
+
+  const zip = Docs.montarZip(arquivos);
+  guardar(protocolo, { zip, arquivos, dados: d, nomeCliente: d.nomeCliente });
+
+  // 2) Google Drive — cria a pasta do cliente e sobe os 6 documentos
+  let pastaUrl = '';
+  let pastaNome = nomeDaPasta(d, agora);
+  const docsEnviados = {};
+
+  if (!FOLDER_ID) {
+    avisos.push('FOLDER_ID não configurado no Render — nada foi enviado ao Drive.');
+  } else {
+    try {
+      const auth  = G.getAuth();
+      const pasta = await G.obterPasta(auth, FOLDER_ID, pastaNome);
+      pastaUrl = pasta.webViewLink || `https://drive.google.com/drive/folders/${pasta.id}`;
+
+      for (const a of arquivos) {
+        const enviado = await G.enviarArquivo(auth, pasta.id, a.nome, a.buffer);
+        docsEnviados[a.nome] = enviado.webViewLink || '';
       }
-      novoZip.addFile('word/document.xml', Buffer.from(xml, 'utf8'));
-    } else {
-      novoZip.addFile(entry.entryName, entry.getData());
+    } catch (err) {
+      console.error('Erro no Drive:', err);
+      avisos.push('Drive: ' + explicarErroDrive(err));
     }
-  });
-  return novoZip.toBuffer();
-}
-
-// ── Parágrafo Word ────────────────────────────────────────────────────────
-function par(txt, bold, italic, size, center, cor) {
-  const jc  = center ? '<w:jc w:val="center"/>' : '';
-  const b   = bold   ? '<w:b/><w:bCs/>' : '';
-  const it  = italic ? '<w:i/><w:iCs/>' : '';
-  const sz  = size || 20;
-  const c   = cor   || '111111';
-  const t   = (txt||'')
-    .replace(/&/g,'&amp;')
-    .replace(/</g,'&lt;')
-    .replace(/>/g,'&gt;');
-  return '<w:p><w:pPr><w:spacing w:after="60"/>' + jc + '</w:pPr>' +
-    '<w:r><w:rPr>' + b + it +
-    '<w:sz w:val="' + sz + '"/><w:szCs w:val="' + sz + '"/>' +
-    '<w:color w:val="' + c + '"/>' +
-    '<w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/>' +
-    '</w:rPr><w:t xml:space="preserve">' + t + '</w:t></w:r></w:p>';
-}
-
-function secao(titulo) {
-  return par(titulo, true, false, 22, false, '8B7A3A');
-}
-
-function sep() {
-  return par(Array(50).join('\u2500'), false, false, 14, false, 'C9A84C');
-}
-
-// ── Gerar resumo jurídico com timbrado ───────────────────────────────────
-function gerarResumoDocx(d) {
-  const { nomeCliente, nomeEmpresa } = extrairDados(d);
-  const agora   = new Date();
-  const dataFmt = agora.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
-  const pedidos = Array.isArray(d.pedidos) ? d.pedidos
-    : (d.pedidos||'').split(', ').filter(Boolean);
-  const docsEnt = Array.isArray(d.docsEntregues) ? d.docsEntregues
-    : (d.docsEntregues||'').split(', ').filter(Boolean);
-
-  var body = '';
-  body += par('RESUMO JURÍDICO DO CASO', true, false, 26, true, '5C4A10');
-  body += sep();
-  body += par('Protocolo: ' + (d._id||'—') + '     Data: ' + dataFmt, false, false, 18, false, '555555');
-  body += par('Urgência: ' + (d.urgencia||'—') + '     Viabilidade: ' + (d.viabilidade||'—'), false, false, 18, false, '555555');
-  body += sep();
-
-  body += secao('1. CLIENTE');
-  body += par('Nome: ' + (nomeCliente||'—'), false, false, 20);
-  body += par('CPF: ' + (d.cpf||'—') + '     RG: ' + (d.rg||'—'), false, false, 20);
-  body += par('WhatsApp: ' + (d.whatsapp||'—') + '     E-mail: ' + (d.email||'—'), false, false, 20);
-  body += par('Endereço: ' + (d.endereco||'—'), false, false, 20);
-  body += par('Nascimento: ' + (d.dataNascimento||'—') + '     Estado civil: ' + (d.estadoCivil||'—') + '     Profissão: ' + (d.profissao||'—'), false, false, 20);
-  body += sep();
-
-  body += secao('2. VÍNCULO EMPREGATÍCIO');
-  body += par('Empresa: ' + (nomeEmpresa||'—') + '     CNPJ: ' + (d.cnpj||'—'), false, false, 20);
-  body += par('Cargo real: ' + (d.cargoReal||'—') + '     Cargo CTPS: ' + (d.cargoCtps||'—'), false, false, 20);
-  body += par('Salário: ' + (d.salario||'—') + '     Contrato: ' + (d.tipoContrato||'—'), false, false, 20);
-  body += par('Admissão: ' + (fmtData(d.dataAdmissao)||'—') + '     Saída: ' + (fmtData(d.dataSaida)||'—'), false, false, 20);
-  body += par('CTPS: ' + (d.ctpsRegistrada||'—'), false, false, 20);
-  if (d.obs_vinculo) body += par('Obs: ' + d.obs_vinculo, false, true, 19, false, '555555');
-  body += sep();
-
-  body += secao('3. DESLIGAMENTO');
-  body += par('Forma: ' + (d.formaDesligamento||'—'), false, false, 20);
-  body += par('TRCT pago: ' + (d.trctPago||'—') + '     FGTS: ' + (d.fgts||'—') + '     Aviso prévio: ' + (d.avisoPrevio||'—'), false, false, 20);
-  if (d.narrativa) {
-    body += par('Narrativa do cliente:', true, false, 20);
-    body += par(d.narrativa, false, true, 19, false, '333333');
   }
-  if (d.obs_deslig) body += par('Obs: ' + d.obs_deslig, false, true, 19, false, '555555');
-  body += sep();
 
-  body += secao('4. JORNADA');
-  var hr = (d.hrEntrada && d.hrSaida) ? d.hrEntrada + ' às ' + d.hrSaida : '—';
-  body += par('Horário: ' + hr + '     Dias/semana: ' + (d.diasSemana||'—'), false, false, 20);
-  body += par('Intervalo: ' + (d.intervalo||'—') + '     Horas extras: ' + (d.horasExtras||'—'), false, false, 20);
-  body += par('Controle de ponto: ' + (d.controlePonto||'—'), false, false, 20);
-  if (d.obs_jornada) body += par('Obs: ' + d.obs_jornada, false, true, 19, false, '555555');
-  body += sep();
-
-  body += secao('5. PEDIDOS SINALIZADOS');
-  if (pedidos.length) {
-    pedidos.forEach(function(p) { body += par('\u2022 ' + p, false, false, 20); });
+  // 3) Planilha de atendimentos
+  if (!SHEET_ID) {
+    avisos.push('SHEET_ID não configurado no Render — o atendimento não foi registrado na planilha.');
   } else {
-    body += par('(nenhum selecionado)', false, true, 19, false, '888888');
-  }
-  if (d.obs_pedidos) body += par('Obs: ' + d.obs_pedidos, false, true, 19, false, '555555');
-  body += sep();
-
-  body += secao('6. DOCUMENTOS');
-  if (docsEnt.length) {
-    docsEnt.forEach(function(p) { body += par('\u2022 ' + p, false, false, 20); });
-  } else {
-    body += par('(nenhum marcado)', false, true, 19, false, '888888');
-  }
-  if (d.docsPendentes) body += par('Pendentes: ' + d.docsPendentes, false, false, 20);
-  if (d.obs_docs) body += par('Obs: ' + d.obs_docs, false, true, 19, false, '555555');
-  body += sep();
-
-  body += secao('7. PRESCRIÇÃO');
-  body += par('Prazo bienal: ' + (d.prazoBienal||'—') + '     Dias restantes: ' + (d.diasRestantes||'—'), false, false, 20);
-  if (d.obs_presc) body += par('Estabilidade/obs: ' + d.obs_presc, false, true, 19, false, '555555');
-  body += sep();
-
-  body += secao('8. TESTEMUNHAS');
-  var tests = d.testemunhas || [];
-  if (tests.length) {
-    tests.forEach(function(t) {
-      if (t.nome) body += par('\u2022 ' + t.nome + (t.tel ? ' — ' + t.tel : '') + (t.obs ? ' (' + t.obs + ')' : ''), false, false, 20);
-    });
-  } else {
-    body += par('(nenhuma informada)', false, true, 19, false, '888888');
-  }
-  if (d.obs_test) body += par('Obs: ' + d.obs_test, false, true, 19, false, '555555');
-  body += sep();
-
-  body += secao('9. RESUMO DO CASO');
-  body += par(d.resumoCaso || '(não preenchido)', false, true, 20, false, '1A1A18');
-  body += par('', false, false, 18);
-  body += secao('10. PRÓXIMO PASSO');
-  body += par(d.proximoPasso || '(não definido)', false, false, 20);
-  body += par('Advogado responsável: ' + (d.advogado||'—') + '     Atendente: ' + (d.atendente||'—'), false, false, 20);
-  body += par('Canal: ' + (d.comoConheceu||'—'), false, false, 20);
-  if (d.obs_final) {
-    body += sep();
-    body += secao('OBSERVAÇÕES FINAIS');
-    body += par(d.obs_final, false, true, 20, false, '333333');
-  }
-  body += sep();
-
-  // Usar template base com logo
-  const templatePath = path.join(__dirname, 'templates', 'TEMPLATE_RESUMO_BASE.docx');
-  const zipBase = new AdmZip(templatePath);
-  const novoZip = new AdmZip();
-
-  zipBase.getEntries().forEach(function(entry) {
-    if (entry.entryName === 'word/document.xml') {
-      var xml = entry.getData().toString('utf8');
-      xml = xml.replace('{{BODY_PLACEHOLDER}}', body);
-      novoZip.addFile('word/document.xml', Buffer.from(xml, 'utf8'));
-    } else {
-      novoZip.addFile(entry.entryName, entry.getData());
+    try {
+      const auth = G.getAuth();
+      await G.salvarLinha(auth, SHEET_ID, linhaDaPlanilha(d, protocolo, agora, pastaUrl));
+    } catch (err) {
+      console.error('Erro na planilha:', err);
+      avisos.push('Planilha: ' + err.message);
     }
-  });
-
-  return novoZip.toBuffer();
-}
-
-async function salvarSheets(auth, sheetId, linha) {
-  const sheets = google.sheets({ version: 'v4', auth });
-  try {
-    const check = await sheets.spreadsheets.values.get({
-      spreadsheetId: sheetId, range: 'Atendimentos!A1',
-    });
-    if (!check.data.values || check.data.values[0][0] !== 'ID') throw new Error('sem cab');
-  } catch(e) {
-    const cab = ['ID','Data/Hora','Nome','CPF','WhatsApp','E-mail',
-      'Empresa','CNPJ','Cargo','Salário','Admissão','Saída',
-      'Desligamento','TRCT','FGTS','Pedidos',
-      'Docs Entregues','Docs Pendentes','Prazo Bienal','Urgência',
-      'Viabilidade','Advogado','Atendente','Canal','Resumo','Próximo Passo'];
-    await sheets.spreadsheets.values.update({
-      spreadsheetId: sheetId, range: 'Atendimentos!A1',
-      valueInputOption: 'RAW', requestBody: { values: [cab] },
-    });
   }
-  await sheets.spreadsheets.values.append({
-    spreadsheetId: sheetId, range: 'Atendimentos!A1',
-    valueInputOption: 'RAW', requestBody: { values: [linha] },
-  });
-}
 
-app.post('/salvar', async function(req, res) {
-  try {
-    const d = req.body;
-    const agora   = new Date();
-    const dataFmt = agora.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
-    const id      = d._id || require('crypto').randomUUID();
-    const { nomeCliente, nomeEmpresa } = extrairDados(d);
-    const SHEET_ID = process.env.SHEET_ID;
-    if (SHEET_ID) {
-      const auth = await getGoogleAuth();
-      const pedidos = Array.isArray(d.pedidos) ? d.pedidos.join(', ') : (d.pedidos || '');
-      const docsEnt = Array.isArray(d.docsEntregues) ? d.docsEntregues.join(', ') : (d.docsEntregues || '');
-      await salvarSheets(auth, SHEET_ID, [
-        id, dataFmt, nomeCliente, d.cpf||'', d.whatsapp||'', d.email||'',
-        nomeEmpresa, d.cnpj||'', d.cargoReal||'', d.salario||'',
-        fmtData(d.dataAdmissao), fmtData(d.dataSaida),
-        d.formaDesligamento||'', d.trctPago||'', d.fgts||'',
-        pedidos, docsEnt, d.docsPendentes||'',
-        d.prazoBienal||'', d.urgencia||'',
-        d.viabilidade||'', d.advogado||'', d.atendente||'',
-        d.comoConheceu||'', d.resumoCaso||'', d.proximoPasso||'',
-      ]);
-    }
-    res.json({ ok: true, id });
-  } catch (err) {
-    console.error('Erro /salvar:', err.message);
-    res.status(500).json({ ok: false, erro: err.message });
-  }
+  res.json({
+    ok: true,
+    protocolo,
+    pastaNome,
+    pastaUrl,
+    zipUrl: `/baixar/${protocolo}`,
+    docs: docsEnviados,
+    documentos: arquivos.map((a) => a.nome),
+    zapsignDisponivel: ZapSign.ativo(),
+    avisos,
+    msg: pastaUrl
+      ? `6 documentos gerados na pasta "${pastaNome}".`
+      : '6 documentos gerados (o envio ao Drive não foi concluído — veja os avisos).',
+  });
 });
 
-app.post('/gerar-docs', function(req, res) {
-  try {
-    const d = req.body;
-    const { nomeCliente, dadosTemplate } = extrairDados(d);
-    const nomeBase = (nomeCliente || 'cliente').replace(/\s+/g, '_');
-
-    const templates = [
-      { arquivo: 'TEMPLATE_CONTRATO_DE_HONORARIOS.docx',     nome: '2_Contrato_' },
-      { arquivo: 'TEMPLATE_PROCURACAO.docx',                  nome: '3_Procuracao_' },
-      { arquivo: 'TEMPLATE_DECLARACAO_HIPOSSUFICIENCIA.docx', nome: '4_Declaracao_' },
-      { arquivo: 'TEMPLATE_TERMO_CIENCIA.docx',               nome: '5_Termo_Ciencia_' },
-    ];
-
-    const zipSaida = new AdmZip();
-
-    // 1. Resumo jurídico com timbrado
-    zipSaida.addFile('1_Resumo_Juridico_' + nomeBase + '.docx', gerarResumoDocx(d));
-
-    // 2-5. Templates preenchidos
-    templates.forEach(function(t) {
-      zipSaida.addFile(t.nome + nomeBase + '.docx', preencherTemplate(t.arquivo, dadosTemplate));
+// ── Download do .zip gerado ──────────────────────────────────────────────────
+app.get('/baixar/:id', (req, res) => {
+  const item = CACHE.get(req.params.id);
+  if (!item) {
+    return res.status(404).json({
+      ok: false,
+      erro: 'Este atendimento não está mais disponível para download (o link vale 1 hora). Salve novamente.',
     });
+  }
+  const nome = Docs.limpaNome(item.nomeCliente) + '_documentos.zip';
+  res.setHeader('Content-Type', 'application/zip');
+  res.setHeader('Content-Disposition', `attachment; filename="${nome}"`);
+  res.send(item.zip);
+});
 
-    const zipBuffer = zipSaida.toBuffer();
+// ── Gera e devolve o .zip direto, sem Drive nem planilha ─────────────────────
+app.post('/gerar-docs', async (req, res) => {
+  try {
+    const d = req.body || {};
+    const protocolo = d._id || novoProtocolo();
+    const arquivos = await Docs.gerarTodos(d, protocolo, new Date());
+    const zip = Docs.montarZip(arquivos);
+    guardar(protocolo, { zip, arquivos, dados: d, nomeCliente: d.nomeCliente });
+
+    const nome = Docs.limpaNome(d.nomeCliente) + '_documentos.zip';
     res.setHeader('Content-Type', 'application/zip');
-    res.setHeader('Content-Disposition',
-      'attachment; filename="' + nomeBase + '_documentos.zip"');
-    res.send(zipBuffer);
-
+    res.setHeader('Content-Disposition', `attachment; filename="${nome}"`);
+    res.send(zip);
   } catch (err) {
-    console.error('Erro /gerar-docs:', err.message);
+    console.error('Erro /gerar-docs:', err);
     res.status(500).json({ ok: false, erro: err.message });
   }
 });
 
-app.get('/listar', async function(req, res) {
+// ── ZapSign — envia contrato, procuração, declaração e termo p/ assinatura ───
+app.post('/zapsign', async (req, res) => {
   try {
-    const auth   = await getGoogleAuth();
-    const sheets = google.sheets({ version: 'v4', auth });
-    const r = await sheets.spreadsheets.values.get({
-      spreadsheetId: process.env.SHEET_ID, range: 'Atendimentos!A:Z',
+    if (!ZapSign.ativo()) {
+      return res.status(400).json({
+        ok: false,
+        erro: 'A assinatura eletrônica está desligada: falta a variável ZAPSIGN_TOKEN no Render.',
+      });
+    }
+
+    const protocolo = (req.body && req.body.protocolo) || '';
+    let dados = (req.body && req.body.dados) || null;
+    let arquivos = null;
+
+    const item = CACHE.get(protocolo);
+    if (item) {
+      arquivos = item.arquivos;
+      dados = dados || item.dados;
+    } else {
+      if (!dados || !dados.nomeCliente) {
+        return res.status(400).json({
+          ok: false,
+          erro: 'Atendimento não encontrado. Salve o atendimento novamente antes de enviar para assinatura.',
+        });
+      }
+      arquivos = await Docs.gerarTodos(dados, protocolo || novoProtocolo(), new Date());
+    }
+
+    const r = await ZapSign.enviarParaAssinatura({
+      dados,
+      arquivos,
+      filtros: Docs.PARA_ASSINATURA,
     });
-    const rows = r.data.values || [];
-    if (rows.length <= 1) return res.json({ ok: true, fichas: [] });
-    const [cab, ...dados] = rows;
-    const fichas = dados.map(function(row) {
-      return Object.fromEntries(cab.map(function(c,i) { return [c, row[i]||'']; }));
+
+    res.json({
+      ok: r.enviados.length > 0,
+      enviados: r.enviados,
+      falhas: r.falhas,
+      msg: r.enviados.length
+        ? `${r.enviados.length} documento(s) enviado(s) para assinatura de ${dados.nomeCliente}.`
+        : 'Nenhum documento foi enviado — veja as falhas.',
     });
+  } catch (err) {
+    console.error('Erro /zapsign:', err);
+    res.status(500).json({ ok: false, erro: err.message });
+  }
+});
+
+// ── Consulta dos atendimentos já registrados ─────────────────────────────────
+app.get('/listar', async (req, res) => {
+  try {
+    if (!SHEET_ID) return res.status(400).json({ ok: false, erro: 'SHEET_ID não configurado.' });
+    const fichas = await G.listarFichas(G.getAuth(), SHEET_ID);
     res.json({ ok: true, fichas });
   } catch (err) {
     res.status(500).json({ ok: false, erro: err.message });
   }
 });
 
-app.get('/ping', function(req, res) {
-  res.json({ ok: true, msg: 'Martins & Filho — online' });
+// ── Diagnóstico: confere toda a configuração de uma vez ──────────────────────
+app.get('/diag', async (req, res) => {
+  const r = {
+    servidor: 'Martins & Filho — online',
+    hora: new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' }),
+    variaveis: {
+      GOOGLE_SERVICE_ACCOUNT: !!process.env.GOOGLE_SERVICE_ACCOUNT,
+      FOLDER_ID: FOLDER_ID || '(vazio)',
+      SHEET_ID: SHEET_ID || '(vazio)',
+      IMPERSONATE_USER: process.env.IMPERSONATE_USER || '(não usado)',
+      ZAPSIGN_TOKEN: ZapSign.ativo(),
+    },
+    contaDeServico: G.emailContaServico(),
+    testes: {},
+  };
+
+  // Templates presentes?
+  try {
+    const fs = require('fs');
+    r.testes.templates = fs.readdirSync(path.join(__dirname, 'templates'))
+      .filter((f) => f.endsWith('.docx'));
+  } catch (e) {
+    r.testes.templates = 'ERRO: ' + e.message;
+  }
+
+  // Geração dos documentos
+  try {
+    const teste = await Docs.gerarTodos(
+      { nomeCliente: 'TESTE DE CONEXÃO', cpf: '000.000.000-00', empresas: [{ nome: 'EMPRESA TESTE' }] },
+      'AT-DIAGNOSTICO', new Date(),
+    );
+    r.testes.geracaoDocumentos = `OK — ${teste.length} documentos (${teste.map((t) => t.nome).join(', ')})`;
+  } catch (e) {
+    r.testes.geracaoDocumentos = 'ERRO: ' + e.message;
+  }
+
+  // Acesso à pasta do Drive (inclusive teste real de gravação)
+  if (FOLDER_ID) {
+    try {
+      const auth = G.getAuth();
+      const info = await G.infoPasta(auth, FOLDER_ID);
+      r.testes.pastaDrive = `OK — "${info.name}" (pode criar arquivos: ${info.capabilities && info.capabilities.canAddChildren ? 'sim' : 'não'})`;
+
+      const arq = await G.enviarArquivo(
+        auth, FOLDER_ID, '_teste_conexao.txt',
+        Buffer.from('teste de gravação — pode apagar'), 'text/plain',
+      );
+      await G.apagarArquivo(auth, arq.id);
+      r.testes.gravacaoNoDrive = 'OK — arquivo de teste criado e apagado com sucesso';
+    } catch (e) {
+      r.testes.gravacaoNoDrive = 'ERRO: ' + explicarErroDrive(e);
+    }
+  } else {
+    r.testes.pastaDrive = 'FOLDER_ID não configurado';
+  }
+
+  // Acesso à planilha
+  if (SHEET_ID) {
+    try {
+      const fichas = await G.listarFichas(G.getAuth(), SHEET_ID);
+      r.testes.planilha = `OK — ${fichas.length} atendimento(s) registrado(s)`;
+    } catch (e) {
+      r.testes.planilha = 'ERRO: ' + e.message;
+    }
+  } else {
+    r.testes.planilha = 'SHEET_ID não configurado';
+  }
+
+  res.json(r);
 });
 
-app.listen(PORT, function() {
-  console.log('Servidor rodando na porta ' + PORT);
-});
+app.get('/ping', (req, res) => res.json({ ok: true, msg: 'Martins & Filho — online' }));
+
+app.listen(PORT, () => console.log(`Servidor rodando na porta ${PORT}`));
