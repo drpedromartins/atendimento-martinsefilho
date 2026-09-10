@@ -9,7 +9,7 @@ const Docs = require('../lib/docs');
 
 const CASO = {
   _id: 'AT-TESTE-0001',
-  nomeCliente: 'Maria Aparecida de Souza',
+  nomeCliente: 'Maria Aparecida de Souza', genero: 'F',
   cpf: '123.456.789-00', rg: '1.234.567', dataNascimento: '1985-04-12',
   nacionalidade: 'brasileira', estadoCivil: 'casada', profissao: 'auxiliar de limpeza',
   escolaridade: 'Ensino médio completo',

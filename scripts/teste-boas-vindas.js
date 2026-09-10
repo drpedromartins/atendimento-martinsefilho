@@ -16,8 +16,8 @@ const ERRADO_PARA_MULHER = [/bem\s*vindo/i, /nosso\s+cliente/i, /guiá-lo/i];
 const CASOS = [
   { nomeCliente: 'Maria Aparecida de Souza', genero: 'F' },
   { nomeCliente: 'João Conceição Assunção',  genero: 'M' },
-  { nomeCliente: 'Ana Paula Costa',          estadoCivil: 'Casada' },
-  { nomeCliente: 'Carlos Eduardo Nogueira',  estadoCivil: 'Solteiro' },
+  { nomeCliente: 'Ana Paula Costa',          genero: 'F' },
+  { nomeCliente: 'Carlos Eduardo Nogueira',  genero: 'M' },
 ];
 
 (async () => {
