@@ -2,15 +2,37 @@
 
 O funcionário preenche a ficha no site e, com **um clique**, o sistema:
 
-1. Gera **7 documentos**:
+1. Gera **7 documentos**, nesta ordem:
    - `0_Boas_Vindas` — **PDF** de boas-vindas já com o nome do cliente e o gênero certo
-   - `1_Ficha_Atendimento` — a ficha completa preenchida (todas as 13 seções)
-   - `2_Resumo_Juridico` — resumo do caso com as teses identificadas
-   - `3_Contrato` — contrato de honorários (template timbrado)
-   - `4_Procuracao` — procuração (template timbrado)
-   - `5_Declaracao` — declaração de hipossuficiência (template timbrado)
-   - `6_Termo_Ciencia` — termo de ciência (template timbrado)
-2. Cria a pasta **`CLIENTE x EMPRESA — DATA`** dentro da pasta automatizada do Drive e sobe os 6 documentos.
+   - `1_Procuracao` — procuração (template timbrado)
+   - `2_Declaracao_Hipossuficiencia` — declaração de hipossuficiência (template timbrado)
+   - `3_Termo_Ciencia` — termo de ciência (template timbrado)
+   - `4_Ficha_Atendimento` — a ficha completa preenchida (todas as 13 seções)
+   - `5_Resumo_Juridico` — resumo do caso com as teses identificadas
+   - `6_Contrato_Honorarios` — contrato de honorários (template timbrado)
+2. Cria a pasta **`CLIENTE x EMPRESA — DATA`** dentro de *COMERCIAL MARTINS E FILHO / PASTA CLIENTES - AUTOMATIZADA* no Drive e sobe os 7 documentos.
+
+### Gênero do cliente (obrigatório)
+
+Logo abaixo do nome há dois botões: **Masculino** e **Feminino**. Sem marcar um deles,
+o sistema não salva — um documento com a concordância errada é pior do que um aviso.
+
+O gênero muda automaticamente, nos quatro documentos Word e na carta de boas-vindas,
+toda palavra marcada no modelo com `(a)`:
+
+| No modelo | Cliente homem | Cliente mulher |
+|---|---|---|
+| `portador(a)`, `inscrito(a)` | portador, inscrito | portadora, inscrita |
+| `o(a) Contratante`, `do(a)`, `pelo(a)` | o, do, pelo | a, da, pela |
+| `ao(à) Contratante` | ao | à |
+| `O(A) CONTRATANTE`, `este(a)` | O, este | A, esta |
+| `Brasileiro(a)`, `Casado(a)` (da ficha) | brasileiro, casado | brasileira, casada |
+
+Marcas de plural — `testemunha(s)`, `trabalhou(ram)` — não são tocadas. Para acrescentar
+uma palavra nova que mude com o gênero, basta escrevê-la no modelo com `(a)` no fim.
+
+Os documentos saem **sem marca-texto amarelo** nem fundo colorido, mesmo que o modelo
+tenha — o destaque servia para o preenchimento manual e não é mais necessário.
 3. Registra o atendimento na planilha do Google Sheets (com o link da pasta).
 4. Baixa o `.zip` com tudo no computador do funcionário.
 5. Abre a pasta do Drive numa aba nova.
@@ -49,9 +71,9 @@ O código precisa estar no GitHub. O Render pega de lá sozinho a cada alteraç�
 | Variável | Obrigatória | O que é |
 |---|---|---|
 | `GOOGLE_SERVICE_ACCOUNT` | Sim | O arquivo `.json` inteiro da conta de serviço do Google, colado das chaves `{` até `}`. |
-| `FOLDER_ID` | Sim | ID da pasta **PASTA CLIENTES - AUTOMATIZADA**: `1EpvGtzCR8ZUhlFG5Gsbwgx6YveWucS9d` |
 | `SHEET_ID` | Sim | ID da planilha de atendimentos (está na URL da planilha, entre `/d/` e `/edit`). |
-| `IMPERSONATE_USER` | Recomendada | E-mail do escritório (ex.: `pedromartins@pedromartins.adv.br`). Ver seção 3. |
+| `FOLDER_ID` | Não | Já vem no sistema: `1EpvGtzCR8ZUhlFG5Gsbwgx6YveWucS9d` (PASTA CLIENTES - AUTOMATIZADA). Só preencha para usar outra pasta. |
+| `IMPERSONATE_USER` | Não | Já vem no sistema: `pedromartins@pedromartins.adv.br`, o dono da pasta. Ver seção 3. |
 | `ZAPSIGN_TOKEN` | Não | Token da API do ZapSign. Sem ele, o botão de assinatura não aparece. |
 | `ZAPSIGN_AUTH_MODE` | Não | Como o cliente assina. Padrão: `assinaturaTela` (desenha a assinatura). |
 
@@ -59,26 +81,28 @@ Depois de mexer em qualquer variável, clique em **Save Changes** — o Render r
 
 ---
 
-## 3. Permissão da pasta no Google Drive
+## 3. Autorizar o sistema a gravar no Drive (uma vez só)
 
-A pasta precisa estar compartilhada com a conta de serviço.
+Contas de serviço do Google **não têm espaço próprio** para guardar arquivos: mesmo
+com a pasta compartilhada, o Google recusa o upload. Por isso o sistema grava **em nome
+de `pedromartins@pedromartins.adv.br`**, o dono da pasta — os arquivos ficam no Drive
+do escritório, como se ele mesmo tivesse criado. Não é preciso compartilhar a pasta.
 
-1. Abra `https://atendimento-mf.onrender.com/diag` e anote o e-mail em **`contaDeServico`** (termina em `@...iam.gserviceaccount.com`).
-2. No Drive, abra a pasta **PASTA CLIENTES - AUTOMATIZADA** → **Compartilhar** → cole esse e-mail → permissão **Editor**.
-3. Faça o mesmo com a **planilha** de atendimentos.
+Isso depende de uma autorização que só o administrador do Google Workspace pode dar:
 
-### Sobre o `IMPERSONATE_USER`
-
-Contas de serviço do Google **não têm espaço de armazenamento próprio**. Sem esse ajuste, o Drive pode recusar o envio com erro de cota. Duas formas de resolver:
-
-**Opção A — delegação em todo o domínio (recomendada):**
-1. No `/diag`, copie o **Client ID** da conta de serviço (no Google Cloud, em Contas de Serviço → a conta → Detalhes).
-2. No [Admin do Google Workspace](https://admin.google.com) → **Segurança** → **Controle de acesso e dados** → **Controles de API** → **Delegação em todo o domínio** → **Adicionar novo**.
-3. Cole o Client ID e, em escopos, cole:
+1. Abra `https://atendimento-mf.onrender.com/diag` e copie o número em
+   **`idDoClienteDaContaDeServico`**.
+2. Entre em [admin.google.com](https://admin.google.com) com `pedromartins@pedromartins.adv.br`.
+3. **Segurança** → **Acesso e controle de dados** → **Controles de API** →
+   **Gerenciar delegação em todo o domínio** → **Adicionar novo**.
+4. Em **ID do cliente**, cole o número. Em **Escopos do OAuth**, cole:
    `https://www.googleapis.com/auth/drive,https://www.googleapis.com/auth/spreadsheets`
-4. No Render, preencha `IMPERSONATE_USER` com o e-mail do escritório.
+5. **Autorizar**. Pode levar alguns minutos para valer.
 
-**Opção B — Drive compartilhado:** mover a pasta para um *Drive compartilhado* (Shared Drive) do Workspace e adicionar a conta de serviço como membro. Arquivos em Drive compartilhado não consomem cota individual.
+Depois, o `/diag` deve mostrar `delegacao: OK` e `gravacaoNoDrive: OK`.
+
+A planilha continua sendo lida pela conta de serviço — ela já está compartilhada e
+funcionando.
 
 ---
 
@@ -91,7 +115,7 @@ Essa página testa tudo de uma vez e responde em português:
 - `variaveis` — quais variáveis estão preenchidas
 - `contaDeServico` — o e-mail para compartilhar a pasta
 - `templates` — se os 4 modelos .docx estão no servidor
-- `geracaoDocumentos` — se os 6 documentos são gerados
+- `geracaoDocumentos` — se os 7 documentos são gerados
 - `pastaDrive` — se a pasta foi encontrada e aceita novos arquivos
 - `gravacaoNoDrive` — cria um arquivo de teste na pasta e apaga em seguida (é o teste que vale)
 - `planilha` — quantos atendimentos já estão registrados
@@ -117,9 +141,10 @@ O cliente recebe o link por e-mail e/ou WhatsApp, conforme o que estiver preench
 O sistema já monta a carta com o nome do cliente e a concordância de gênero correta
 (*bem-vinda* / *bem-vindo*), sem ninguém precisar editar nada.
 
-**Como o gênero é definido:** pelo campo *Tratamento* na primeira seção da ficha.
-Se ficar em branco, o sistema deduz pelo estado civil (Casada → feminino). Não
-conseguindo deduzir, usa a forma neutra "bem-vindo(a)".
+**Como o gênero é definido:** pelos botões *Masculino / Feminino*, obrigatórios,
+logo abaixo do nome do cliente. Não há mais dedução pelo estado civil: as opções da
+ficha ("Casado(a)", "Solteiro(a)") são neutras, e a dedução falhava calada — foi o que
+fez um cliente homem receber "SEJA BEM VINDA".
 
 **Um único design no Canva serve para os dois gêneros.** O escritório mantém só a
 versão feminina; a masculina é gerada a partir dela, com a concordância trocada.
@@ -202,11 +227,13 @@ As medidas são em pontos, contados a partir do canto superior esquerdo da pági
 | `/` | Formulário de atendimento |
 | `/diag` | Diagnóstico da configuração |
 | `/salvar` | Salva o atendimento (documentos + Drive + planilha) |
-| `/baixar/:protocolo` | Baixa de novo o .zip (vale 1 hora) |
-| `/gerar-docs` | Só gera o .zip, sem tocar no Drive |
+| `/baixar/:chave` | Baixa de novo o .zip (vale 1 hora; a chave é aleatória) |
 | `/zapsign` | Envia os documentos para assinatura |
-| `/listar` | Lista os atendimentos da planilha |
 | `/ping` | Confirma que o servidor está no ar |
+
+As antigas rotas `/listar` e `/gerar-docs` foram retiradas em 10/09/2026: a primeira
+entregava, a qualquer pessoa na internet, os dados de todos os clientes da planilha.
+O link de download também deixou de usar o número do protocolo, que dava para adivinhar.
 
 ---
 
