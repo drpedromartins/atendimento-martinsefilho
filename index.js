@@ -113,6 +113,18 @@ function explicarErroDrive(err) {
   return m;
 }
 
+// A planilha é acessada em nome do escritório (dono dela), não pela conta de
+// serviço: assim ela pode ficar com acesso RESTRITO — antes estava aberta a
+// "qualquer pessoa com o link", e a conta de serviço só conseguia ler.
+async function comPlanilha(fn) {
+  try {
+    return await fn(G.getAuth({ comoUsuario: true }));
+  } catch (err) {
+    if (!G.ehErroDeDelegacao(err)) throw err;
+    return fn(G.getAuth());
+  }
+}
+
 // Tenta o Drive agindo em nome do escritório; se a delegação ainda não foi
 // autorizada, cai para a conta de serviço (que ao menos consegue ler a pasta).
 async function authDoDrive() {
@@ -197,7 +209,7 @@ app.post('/salvar', async (req, res) => {
     avisos.push('SHEET_ID não configurado no Render — o atendimento não foi registrado na planilha.');
   } else {
     try {
-      await G.salvarLinha(G.getAuth(), SHEET_ID, linhaDaPlanilha(d, protocolo, agora, pastaUrl));
+      await comPlanilha((auth) => G.salvarLinha(auth, SHEET_ID, linhaDaPlanilha(d, protocolo, agora, pastaUrl)));
     } catch (err) {
       console.error('Erro na planilha:', err);
       avisos.push('Planilha: ' + err.message);
@@ -343,8 +355,16 @@ app.get('/diag', async (req, res) => {
   // Acesso à planilha
   if (SHEET_ID) {
     try {
-      const fichas = await G.listarFichas(G.getAuth(), SHEET_ID);
-      r.testes.planilha = `OK — ${fichas.length} atendimento(s) registrado(s)`;
+      let modo = `em nome de ${G.USUARIO_DRIVE}`;
+      let fichas;
+      try {
+        fichas = await G.listarFichas(G.getAuth({ comoUsuario: true }), SHEET_ID);
+      } catch (e) {
+        if (!G.ehErroDeDelegacao(e)) throw e;
+        modo = 'conta de serviço (delegação pendente)';
+        fichas = await G.listarFichas(G.getAuth(), SHEET_ID);
+      }
+      r.testes.planilha = `OK — ${fichas.length} atendimento(s) registrado(s) (${modo})`;
     } catch (e) {
       r.testes.planilha = 'ERRO: ' + e.message;
     }
