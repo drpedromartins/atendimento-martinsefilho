@@ -106,6 +106,14 @@ main{max-width:980px;margin:0 auto;padding:18px 14px 90px}
 #status{font-size:12px;color:var(--txt3)}
 #status.ok{color:var(--verde)}
 #status.err{color:#B3261E}
+.obrig{color:#B3261E;font-weight:700}
+.gen-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
+.gen-btn{font-family:'DM Sans',sans-serif;font-size:13px;font-weight:600;padding:9px 20px;border-radius:999px;border:1.5px solid var(--borda);background:var(--bg);color:var(--txt2);cursor:pointer;transition:all .15s}
+.gen-btn small{font-weight:400;color:var(--txt3)}
+.gen-btn:hover{border-color:var(--gold)}
+.gen-btn.on{background:var(--txt);border-color:var(--txt);color:#fff}
+.gen-btn.on small{color:var(--gold)}
+.gen-row.faltando .gen-btn{border-color:#B3261E;background:#FDECEA}
 #pos-salvar a.btn{display:inline-flex;align-items:center;text-decoration:none}
 .btn-row{display:flex;gap:7px}
 .btn{font-family:'DM Sans',sans-serif;font-size:13px;font-weight:500;padding:8px 16px;border-radius:6px;border:1px solid var(--borda);background:var(--bg);color:var(--txt);cursor:pointer;transition:all .15s;display:flex;align-items:center;gap:5px}
@@ -171,17 +179,22 @@ main{max-width:980px;margin:0 auto;padding:18px 14px 90px}
   </div>
   <div class="sec-body open">
     <div class="grid"><div class="f full"><label>Nome completo (como consta no CPF/CTPS)</label><input id="nomeCliente" type="text" placeholder="Nome completo"></div></div>
+    <div class="grid"><div class="f full">
+      <label>Gênero do cliente <span class="obrig">*</span> — define a concordância do contrato, da procuração, da declaração, do termo e da carta de boas-vindas</label>
+      <div class="gen-row" id="genero-row">
+        <button type="button" class="gen-btn" data-v="M" onclick="setGenero(this)">Masculino <small>— "o contratante", "bem vindo"</small></button>
+        <button type="button" class="gen-btn" data-v="F" onclick="setGenero(this)">Feminino <small>— "a contratante", "bem vinda"</small></button>
+      </div>
+      <input type="hidden" id="genero" value="">
+    </div></div>
     <div class="grid g4">
       <div class="f"><label>CPF</label><input id="cpf" type="text" placeholder="000.000.000-00" maxlength="14" oninput="maskCPF(this)"></div>
       <div class="f"><label>RG / Órgão emissor</label><input id="rg" type="text" placeholder="Nº e órgão"></div>
       <div class="f"><label>Data de nascimento</label><input id="dtnasc" type="date"></div>
       <div class="f"><label>Nacionalidade</label><input id="nacionalidade" type="text" placeholder="Brasileiro(a)" value="Brasileiro(a)"></div>
     </div>
-    <div class="grid g4">
+    <div class="grid g3">
       <div class="f"><label>Profissão</label><input id="profissao" type="text" placeholder="Ex: vendedor, operador, técnico..."></div>
-      <div class="f"><label>Tratamento (carta de boas-vindas)</label>
-        <select id="genero"><option value="">Deduzir do estado civil</option><option value="F">Feminino — bem-vinda</option><option value="M">Masculino — bem-vindo</option></select>
-      </div>
       <div class="f"><label>Estado civil</label>
         <select id="estcivil"><option value="">—</option><option>Solteiro(a)</option><option>Casado(a)</option><option>União estável</option><option>Divorciado(a)</option><option>Viúvo(a)</option></select>
       </div>
@@ -662,7 +675,7 @@ main{max-width:980px;margin:0 auto;padding:18px 14px 90px}
 // Assim o sistema funciona igual no Render, em outro servidor ou no computador.
 const WEBAPP = "";
 let PROTO = geraProto();
-let ULTIMO_PROTOCOLO = "";
+let ULTIMO_TOKEN = "";
 let URG = "";
 let empN = 0, jornN = 0, testN = 0;
 
@@ -837,6 +850,14 @@ function chkRI() {
 }
 
 // ── URGÊNCIA ──────────────────────────────────────────────────────────
+// ── GÊNERO DO CLIENTE (obrigatório) ─────────────────────────────────
+function setGenero(btn) {
+  document.querySelectorAll('.gen-btn').forEach(b => b.classList.remove('on'));
+  btn.classList.add('on');
+  document.getElementById('genero').value = btn.dataset.v;
+  document.getElementById('genero-row').classList.remove('faltando');
+}
+
 function setUrg(btn) {
   document.querySelectorAll('.urg-btn').forEach(b=>b.classList.remove('verde','amarelo','vermelho'));
   URG = btn.dataset.v;
@@ -885,7 +906,7 @@ function coletar() {
     telAlt:g('telalt'), email:g('email'),
     cep:g('cep'), rua:g('rua'), numEnd:g('num_end'), complemento:g('complemento'),
     bairro:g('bairro'), cidade:g('cidade'), uf:g('uf'),
-    endereco: [g('rua'), g('num_end'), g('complemento'), g('bairro'), g('cidade')+'/'+g('uf'), g('cep')].filter(Boolean).join(', '),
+    endereco: [g('rua'), g('num_end'), g('complemento'), g('bairro'), [g('cidade'), g('uf')].filter(Boolean).join('/')].filter(Boolean).join(', '),
     obs_cliente:g('obs_cliente'),
     // 2. Reclamadas
     empresas: getEmps(), obs_emp:g('obs_emp'),
@@ -956,6 +977,14 @@ function coletar() {
 async function salvar() {
   const d = coletar();
   if(!d.nomeCliente){ toast('Preencha o nome do cliente','e'); return; }
+  if(!d.genero){
+    toast('Marque se o cliente é homem ou mulher','e');
+    ir('s1');
+    const row = document.getElementById('genero-row');
+    row.classList.add('faltando');
+    row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    return;
+  }
 
   const st  = document.getElementById('status');
   const btn = document.getElementById('btn-salvar');
@@ -982,7 +1011,7 @@ async function salvar() {
       return;
     }
 
-    ULTIMO_PROTOCOLO = j.protocolo;
+    ULTIMO_TOKEN = j.token;
 
     // 1) baixa o .zip com os 6 documentos
     if(j.zipUrl){
@@ -1036,7 +1065,7 @@ function botaoLink(texto, url){
 
 // ── ASSINATURA ELETRÔNICA (ZapSign) ───────────────────────────────────
 async function enviarAssinatura(btn){
-  if(!ULTIMO_PROTOCOLO){ toast('Salve o atendimento primeiro','e'); return; }
+  if(!ULTIMO_TOKEN){ toast('Salve o atendimento primeiro','e'); return; }
   if(!confirm('Enviar contrato, procuração, declaração e termo de ciência para o cliente assinar no ZapSign?')) return;
 
   const original = btn.textContent;
@@ -1046,7 +1075,7 @@ async function enviarAssinatura(btn){
     const r = await fetch(WEBAPP + '/zapsign', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ protocolo: ULTIMO_PROTOCOLO, dados: coletar() })
+      body: JSON.stringify({ token: ULTIMO_TOKEN })
     });
     const j = await r.json();
 
@@ -1149,6 +1178,11 @@ function limpar() {
   if(nac) nac.value='Brasileiro(a)';
   document.querySelectorAll('.ck').forEach(l=>l.classList.remove('on'));
   document.querySelectorAll('.urg-btn').forEach(b=>b.classList.remove('verde','amarelo','vermelho'));
+  document.querySelectorAll('.gen-btn').forEach(b=>b.classList.remove('on'));
+  document.getElementById('genero-row').classList.remove('faltando');
+  ULTIMO_TOKEN = '';
+  document.getElementById('pos-salvar').style.display='none';
+  document.getElementById('pos-salvar').innerHTML='';
   document.querySelectorAll('.mod-painel').forEach(p=>p.classList.remove('open'));
   document.querySelectorAll('.mod-btn').forEach(b=>b.classList.remove('ativo'));
   document.getElementById('emps-container').innerHTML='';
