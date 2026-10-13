@@ -83,6 +83,7 @@ function linhaDaPlanilha(d, protocolo, agora, pastaUrl) {
     d.viabilidade || '', d.advogado || '', d.atendente || '',
     d.comoConheceu || '', d.resumoCaso || '', d.proximoPasso || '',
     pastaUrl || '',
+    'Contrato enviado',
   ];
 }
 
